@@ -33,3 +33,19 @@ def test_make_signals_end_to_end():
     sig = make_signals(calls, SC)
     assert sig["warmup"].tolist() == [True] * 3 + [False] * 3
     assert sig["signal"].tolist() == ["HOLD", "HOLD", "HOLD", "BUY", "HOLD", "SELL"]
+
+
+def test_confidence_only_signals_use_overall_confidence_without_lookahead():
+    from fintrax.confidence_signals import make_signals as confidence_signals, overall_confidence
+    calls = pd.DataFrame({
+        "call_date": [f"2026-01-0{i}" for i in range(1, 7)],
+        "conf_prepared": [0.0, 0.1, 0.2, 0.9, 0.1, -0.9],
+        "conf_qna": [0.0, 0.1, 0.2, 0.9, 0.1, -0.9],
+        "n_prepared": [10] * 6, "n_qna": [30] * 6,
+    })
+    # Sentence-weighted: 10 prepared + 30 Q&A sentences.
+    two = pd.DataFrame({"conf_prepared": [1.0], "conf_qna": [0.0], "n_prepared": [10], "n_qna": [30]})
+    assert np.isclose(overall_confidence(two).iloc[0], 0.25)
+    sig = confidence_signals(calls, {"buy_z": 0.5, "sell_z": -0.5}, min_history=3)
+    assert sig["warmup"].tolist() == [True] * 3 + [False] * 3
+    assert sig["signal"].tolist() == ["HOLD", "HOLD", "HOLD", "BUY", "HOLD", "SELL"]
