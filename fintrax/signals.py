@@ -45,7 +45,7 @@ def make_signals(calls: pd.DataFrame, sc: dict) -> pd.DataFrame:
 def run(cfg: dict) -> pd.DataFrame:
     calls = pd.read_parquet(cfg["paths"]["processed"] / "calls.parquet")
     sig = make_signals(calls, cfg["signals"])
-    cols = ["ticker", "call_date", "conf_prepared", "conf_qna", "gap", "gap_z", "conf_qna_z",
+    cols = ["ticker", "call_date", "call_time_et", "conf_prepared", "conf_qna", "gap", "gap_z", "conf_qna_z",
             "sentiment_prepared", "sentiment_qna", "delta_qoq", "warmup", "signal"]
     out = cfg["paths"]["results"] / "signals.csv"
     sig[cols].round(4).to_csv(out, index=False)

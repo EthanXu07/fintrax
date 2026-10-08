@@ -31,7 +31,7 @@ def to_sentences(turns: pd.DataFrame, min_tokens: int) -> pd.DataFrame:
     sents = mgmt.explode("sentence").dropna(subset=["sentence"])
     sents = sents[sents["sentence"].str.split().str.len() >= min_tokens]
     sents = sents[~sents["sentence"].str.contains(BOILERPLATE)]
-    cols = ["call_id", "ticker", "call_date", "section", "speaker", "role", "turn_id", "sentence"]
+    cols = ["call_id", "ticker", "call_date", "call_time_et", "section", "speaker", "role", "turn_id", "sentence"]
     return sents[cols].reset_index(drop=True)
 
 

@@ -41,3 +41,16 @@ def test_legacy_layout_uses_headers():
 @pytest.mark.parametrize("a,b", [("Amy E. Hood", "Amy Hood"), ("Timothy D. Cook", "Timothy Cook")])
 def test_name_key_ignores_middle_initials(a, b):
     assert name_key(a) == name_key(b)
+
+
+def test_call_date_comes_from_page_not_url():
+    from fintrax.parse import parse_page
+    (date, time), _ = parse_page((FIX / "current_layout.html").read_text())
+    assert (date, time) == ("2026-07-30", "17:00")
+
+
+def test_lookup_role_falls_back_to_unique_last_name():
+    from fintrax.parse import lookup_role
+    participants = {name_key("Jensen Huang"): "CEO", name_key("Colette Kress"): "CFO"}
+    assert lookup_role(participants, "Jen-Hsun Huang") == "CEO"
+    assert lookup_role(participants, "Joseph Moore") is None
