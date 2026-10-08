@@ -43,6 +43,11 @@ signals:
   sell_gap_z: -0.5
   sell_conf_z: -1.0
 
+confidence_signals:
+  # Signals from the model's overall call confidence alone (no prepared-vs-Q&A gap).
+  buy_z: 0.5               # BUY when a call is this many std devs more confident than earlier calls
+  sell_z: -0.5             # SELL when this many std devs less confident
+
 inventory:
   # No fixed holding period: signals add to or clear each stock's inventory.
   lot_dollars: 1000        # a BUY buys this much of the stock at the next open

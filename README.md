@@ -103,6 +103,13 @@ Outputs in `results/`:
 
 **Signal diagnostics.** These are separate from the strategy: the excess return after each signal at fixed 1/5/20/60-day horizons, with t-stats clustered by month (calls in one earnings season aren't independent). Confidence quintiles ranked within each calendar quarter judge the earlier years without any thresholds.
 
+### Confidence-only signals — `fintrax/confidence_signals.py`
+A second, simpler signal uses **only the confidence model**, with no prepared-vs-Q&A comparison:
+- **Score:** the call's overall confidence, the mean P(high) − P(low) over every management sentence.
+- **Signal:** the score is z-scored against all earlier calls. **BUY** if z > 0.5, **SELL** if z < −0.5, otherwise HOLD.
+- **Evaluation:** like the pilot, mean excess return vs SPY after each signal at 1/5/20/60 days, plus a cumulative long-BUY / short-SELL line.
+- **Output:** `results/confidence_only/` (`excess_by_signal.png`, `cumulative_long_short.png`, `signals.csv`, `backtest.json`). It's generated as part of the `backtest` stage.
+
 ### Charts — `fintrax/charts.py`
 | Figure | What it shows |
 |---|---|
@@ -124,6 +131,12 @@ Outputs in `results/`:
 
 ![Pilot: excess return by signal](results/pilot/excess_by_signal.png)
 
+**Confidence-only signals on the pilot** ([`results/pilot/confidence_only/`](results/pilot/confidence_only/)): 61 BUY / 72 HOLD / 49 SELL on 182 tradeable calls. **No edge**: the monthly BUY − SELL spread is +0.24% at 1 day (t = 0.33), −0.55% at 5 days, −1.66% at 20 days (t = −0.83), and +1.25% at 60 days (t = 0.34). The large 60-day HOLD bar comes from a few outliers in a small sample.
+
+| Excess return by signal | Cumulative long BUY / short SELL |
+|---|---|
+| ![](results/pilot/confidence_only/excess_by_signal.png) | ![](results/pilot/confidence_only/cumulative_long_short.png) |
+
 182 traded calls were too few to detect a modest effect, which is why the pipeline now covers the whole archive.
 
 ## Limitations
@@ -141,7 +154,7 @@ make scrape                # ~10 h for the full archive at 1.5 req/s; resumable
 make parse label train     # train ~1 h on Apple Silicon (MPS) or a GPU
 make score                 # ~4 h fp16 for ~14M sentences; resumable
 make signals backtest      # first run downloads prices for every ticker (cached in data/prices)
-make test                  # 30 tests: parser layouts, weak labels, signals, backtest + inventory
+make test                  # 31 tests: parser layouts, weak labels, signals, backtest + inventory
 ```
 
 Or run `python -m fintrax all`. All settings live in [`config.yaml`](config.yaml).

@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from fintrax import charts, inventory, prices
+from fintrax import charts, confidence_signals, inventory, prices
 
 ORDER = ["BUY", "HOLD", "SELL"]
 FEATURES = ["gap", "conf_qna", "conf_prepared", "sentiment_qna"]
@@ -166,6 +166,7 @@ def run(cfg: dict) -> dict:
           f"vs shadow SPY ${s['shadow_spy_pnl']:,.0f} -> excess ${s['excess_pnl']:,.0f}")
     print(f"  strategy {s['strategy']} | SPY shadow {s['shadow_spy']}")
     d = summary["signal_diagnostics"]
+    confidence_signals.run(cfg)  # confidence-only BUY/SELL view -> results/confidence_only/
     for h in horizons:
         if f"{h}d" not in d:
             continue
