@@ -54,3 +54,12 @@ def test_lookup_role_falls_back_to_unique_last_name():
     participants = {name_key("Jensen Huang"): "CEO", name_key("Colette Kress"): "CFO"}
     assert lookup_role(participants, "Jen-Hsun Huang") == "CEO"
     assert lookup_role(participants, "Joseph Moore") is None
+
+
+def test_call_date_from_2018_header_paragraph():
+    from fintrax.parse import parse_page
+    html = ("<html><body><div class='article-body'><p><strong>Example Corp</strong> (EX)<br/>"
+            "Q4 2017 Earnings Conference Call<br/>Feb. 8, 2018,<em> 9:00 a.m. ET</em></p>"
+            "<h2>Prepared Remarks:</h2><p><strong>Pat Exec</strong> -- <em>CEO</em></p><p>Hello.</p>"
+            "</div></body></html>")
+    assert parse_page(html)[0] == ("2018-02-08", "09:00")

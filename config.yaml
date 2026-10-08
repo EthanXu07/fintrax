@@ -1,36 +1,40 @@
-tickers: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, BAC, XOM, CVX, JNJ, PFE, UNH, WMT, COST,
-          HD, NKE, DIS, NFLX, INTC, AMD, CRM, ORCL, KO, PEP, MCD, BA, CAT, TSLA, V]
-
 scrape:
-  # Window for monthly fool.com sitemaps (inclusive); newest 8 calls per ticker are kept.
-  start_month: "2024-04"
-  end_month: "2026-10"
-  delay_seconds: 2.5
-  max_calls_per_ticker: 8
+  # Every transcript in fool.com's monthly sitemaps from this month on (end defaults to now).
+  start_month: "2017-01"
+  end_month: null
+  requests_per_second: 1.5   # shared across workers
+  workers: 3
 
 parse:
   # Calls need this many management words in both prepared remarks and Q&A
   # (some companies post prepared remarks separately and open the call with Q&A).
   min_section_words: 500
+  workers: 8
 
 paths:
   raw: data/raw
   interim: data/interim
   processed: data/processed
+  prices: data/prices
   model: models/fintrax-confidence
   results: results
 
 label:
   min_tokens: 6
   neutral_ratio: 1.0      # neutral samples kept per (low+high)/2 sample
+  max_sentences: 860000   # labeled sample cap (~600k train / 130k val / 130k test)
   seed: 42
 
 train:
   base_model: ProsusAI/finbert
   max_len: 128
-  lr: 2.0e-5
-  epochs: 3
-  batch_size: 16
+  lr: 3.0e-5
+  epochs: 1
+  batch_size: 64
+  bf16: true              # ~1.5x faster on Apple Silicon (MPS)
+
+score:
+  sentiment: false        # also score FinBERT pos/neg sentiment (doubles scoring time)
 
 signals:
   min_history: 20         # calls needed before z-scores are trusted
@@ -39,6 +43,16 @@ signals:
   sell_gap_z: -0.5
   sell_conf_z: -1.0
 
+inventory:
+  # No fixed holding period: signals add to or clear each stock's inventory.
+  lot_dollars: 1000        # a BUY buys this much of the stock at the next open
+  max_lots: 5              # at most this many lots per stock; extra BUYs are skipped
+  # A SELL sells every lot held in that stock; long-only, so a SELL with none held does nothing.
+
 backtest:
   benchmark: SPY
-  horizons: [1, 5, 20]
+  horizons: [1, 5, 20, 60]
+  min_price: 5.0           # skip penny stocks at entry
+  min_dollar_volume: 1000000  # and names trading < $1M/day (20-day average)
+  winsorize: 0.01          # clip the top/bottom 1% of returns in the summary stats
+  chart_tickers: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, JPM, NFLX]

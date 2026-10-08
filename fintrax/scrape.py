@@ -1,35 +1,36 @@
-"""Discover and download Motley Fool earnings-call transcripts.
+"""Discover and download every Motley Fool earnings-call transcript.
 
-Transcript URLs come from two public sources: each ticker's quote page
-(https://www.fool.com/quote/{exchange}/{ticker}/), which links that company's
-recent calls, and fool.com's monthly sitemaps (https://www.fool.com/sitemap/YYYY/MM),
-which robots.txt advertises. Pages are
-fetched politely (fixed delay plus jitter) and cached to disk, so re-running
-never refetches a page that is already saved.
+Discovery walks fool.com's public monthly sitemaps (https://www.fool.com/sitemap/YYYY/MM,
+advertised in robots.txt) and collects every ``/earnings/call-transcripts/`` URL.
+Old URLs are truncated ``.aspx`` slugs without a ticker, so the ticker, title and
+fiscal quarter come from the page itself (``<meta name="primary_tickers">``).
+
+Fetching is rate-limited across a few worker threads and resumable: each URL gets
+one line in ``index.jsonl`` (ok or failed), and only the transcript body is kept,
+gzipped (~15 KB instead of ~500 KB per page).
 """
+import gzip
+import hashlib
 import json
-import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 
 SITEMAP_URL = "https://www.fool.com/sitemap/{year}/{month:02d}"
-QUOTE_URL = "https://www.fool.com/quote/{exchange}/{ticker}/"
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/129 Safari/537.36"
     )
 }
-# e.g. /earnings/call-transcripts/2026/08/07/apple-aapl-q3-2026-earnings-call-transcript/
-# Slugs vary: "-earnings-transcript", truncated "-transcrip", or no ticker at all.
-URL_RE = re.compile(
-    r"/earnings/call-transcripts/(\d{4})/(\d{2})/(\d{2})/"
-    r"([a-z0-9-]+?)-(q[1-4])-(\d{4})-earnings[a-z-]*/?"
-)
+TRANSCRIPT_URL = re.compile(r"https://www\.fool\.com/earnings/call-transcripts/(\d{4})/(\d{2})/(\d{2})/[^<\s\"]+")
+QUARTER_RE = re.compile(r"\b(Q[1-4])\s+(?:FY\s*)?((?:19|20)\d{2})\b", re.I)
 
 
 def months(start: str, end: str):
@@ -40,118 +41,149 @@ def months(start: str, end: str):
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
 
 
-def get(session: requests.Session, url: str, retries: int = 4) -> str:
+class RateLimiter:
+    """At most `rate` requests per second across all threads."""
+
+    def __init__(self, rate: float):
+        self.interval = 1.0 / rate
+        self.lock = threading.Lock()
+        self.next_at = time.monotonic()
+
+    def wait(self) -> None:
+        with self.lock:
+            now = time.monotonic()
+            self.next_at = max(self.next_at + self.interval, now)
+            delay = self.next_at - now
+        time.sleep(delay)
+
+    def penalize(self, seconds: float) -> None:
+        with self.lock:
+            self.next_at = max(self.next_at, time.monotonic()) + seconds
+
+
+def get(session: requests.Session, url: str, limiter: RateLimiter, retries: int = 4) -> str:
     for attempt in range(retries):
+        limiter.wait()
         try:
             r = session.get(url, headers=HEADERS, timeout=30)
-            if r.status_code == 200:
-                return r.text
-            if r.status_code == 404:
-                raise FileNotFoundError(url)
         except requests.RequestException:
-            pass
-        time.sleep(2 ** attempt * 5)
+            time.sleep(5 * 2 ** attempt)
+            continue
+        if r.status_code == 200:
+            return r.text
+        if r.status_code in (404, 410):
+            raise FileNotFoundError(url)
+        if r.status_code in (403, 429, 503):
+            # Being throttled: slow everyone down, not just this thread.
+            print(f"throttled ({r.status_code}) on attempt {attempt + 1}: {url}", flush=True)
+            limiter.penalize(30 * 2 ** attempt)
+        time.sleep(5 * 2 ** attempt)
     raise RuntimeError(f"failed to fetch {url}")
 
 
-def match_ticker(slug: str, tickers: set[str]) -> str | None:
-    """The slug ends with the ticker, e.g. 'apple-aapl' -> 'AAPL'."""
-    last = slug.rsplit("-", 1)[-1].upper()
-    return last if last in tickers else None
-
-
-def to_record(match: re.Match, ticker: str) -> dict:
-    return {
-        "ticker": ticker,
-        "published": f"{match.group(1)}-{match.group(2)}-{match.group(3)}",
-        "fiscal_quarter": f"{match.group(5).upper()} {match.group(6)}",
-        "url": "https://www.fool.com" + match.group(0).rstrip("/") + "/",
-    }
-
-
-def quarter_key(fiscal_quarter: str) -> tuple[int, int]:
-    q, year = fiscal_quarter.split()
-    return int(year), int(q[1])
-
-
-def cached_get(session: requests.Session, url: str, path: Path, refresh: bool, delay: float) -> str:
-    if refresh or not path.exists():
-        path.write_text(get(session, url))
-        time.sleep(delay)
-    return path.read_text()
-
-
-def discover(cfg: dict, session: requests.Session, only: list[str] | None = None) -> list[dict]:
-    """Return transcript records for configured tickers, newest fiscal quarter first."""
-    tickers = set(only or cfg["tickers"])
+def discover(cfg: dict, session: requests.Session, limiter: RateLimiter) -> dict[str, str]:
+    """All transcript URLs in the configured sitemap window -> publish date."""
     sc = cfg["scrape"]
-    cache = cfg["paths"]["raw"] / "discovery"
+    cache = cfg["paths"]["raw"] / "sitemaps"
     cache.mkdir(parents=True, exist_ok=True)
-    found: dict[str, dict] = {}
-
-    # 1) Quote pages: every transcript link there belongs to that ticker.
-    for ticker in sorted(tickers):
-        path = cache / f"quote_{ticker}.html"
-        if not path.exists():
-            for exchange in ("nasdaq", "nyse"):
-                try:
-                    cached_get(session, QUOTE_URL.format(exchange=exchange, ticker=ticker.lower()),
-                               path, True, sc["delay_seconds"])
-                    break
-                except FileNotFoundError:
-                    continue
-        if path.exists():
-            for match in URL_RE.finditer(path.read_text()):
-                rec = to_record(match, ticker)
-                found[rec["url"]] = rec
-
-    # 2) Monthly sitemaps fill gaps; the slug must end with the ticker here.
+    end = sc.get("end_month") or date.today().strftime("%Y-%m")
     current = date.today().strftime("%Y-%m")
-    for y, m in months(sc["start_month"], sc["end_month"]):
+    urls: dict[str, str] = {}
+    for y, m in months(sc["start_month"], end):
         month = f"{y}-{m:02d}"
+        path = cache / f"{month}.xml"
         # The current month's sitemap still grows, so don't trust a cached copy.
-        xml = cached_get(session, SITEMAP_URL.format(year=y, month=m), cache / f"sitemap_{month}.xml",
-                         month == current, sc["delay_seconds"])
-        for match in URL_RE.finditer(xml):
-            if ticker := match_ticker(match.group(4), tickers):
-                rec = to_record(match, ticker)
-                found.setdefault(rec["url"], rec)
-
-    start = sc["start_month"] + "-01"
-    # Fool republishes old calls under new URL dates, so rank by fiscal quarter
-    # (comparable within a ticker); parse.py reads the true call date from the page.
-    records = sorted((r for r in found.values() if r["published"] >= start),
-                     key=lambda r: (r["ticker"], quarter_key(r["fiscal_quarter"])), reverse=True)
-    # Keep the newest N calls per ticker; drop duplicate (ticker, quarter) URLs.
-    kept, seen, per_ticker = [], set(), {}
-    for r in records:
-        key = (r["ticker"], r["fiscal_quarter"])
-        if key in seen or per_ticker.get(r["ticker"], 0) >= sc["max_calls_per_ticker"]:
-            continue
-        seen.add(key)
-        per_ticker[r["ticker"]] = per_ticker.get(r["ticker"], 0) + 1
-        kept.append(r)
-    return kept
+        if not path.exists() or month == current:
+            try:
+                path.write_text(get(session, SITEMAP_URL.format(year=y, month=m), limiter))
+            except FileNotFoundError:
+                continue
+        for match in TRANSCRIPT_URL.finditer(path.read_text()):
+            urls.setdefault(match.group(0), f"{match.group(1)}-{match.group(2)}-{match.group(3)}")
+    return urls
 
 
-def run(cfg: dict, only: list[str] | None = None) -> list[dict]:
+def meta(soup: BeautifulSoup, name: str) -> str:
+    tag = soup.find("meta", attrs={"name": name})
+    return tag["content"].strip() if tag and tag.get("content") else ""
+
+
+def extract(html: str) -> tuple[dict, str]:
+    """Page metadata plus a minimal HTML document holding only the transcript."""
+    soup = BeautifulSoup(html, "lxml")
+    body = soup.select_one("#article-body-transcript") or soup.select_one(".article-body")
+    if body is None:
+        raise ValueError("no transcript body")
+    title = soup.title.get_text(" ", strip=True).removesuffix("| The Motley Fool").strip() if soup.title else ""
+    quarter = QUARTER_RE.search(title)
+    info = {
+        "ticker": meta(soup, "primary_tickers").split(",")[0].strip().upper(),
+        "company": meta(soup, "primary_tickers_companies").split(",")[0].strip(),
+        "title": title,
+        "fiscal_quarter": f"{quarter.group(1).upper()} {quarter.group(2)}" if quarter else "",
+    }
+    return info, f"<html><head><title>{title}</title></head><body>{body}</body></html>"
+
+
+def page_path(raw: Path, url: str) -> Path:
+    h = hashlib.sha1(url.encode()).hexdigest()
+    return raw / "pages" / h[:2] / f"{h}.html.gz"
+
+
+def load_index(raw: Path) -> dict[str, dict]:
+    """Latest record per URL (a retried URL appears more than once)."""
+    path = raw / "index.jsonl"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return {(r := json.loads(line))["url"]: r for line in f if line.strip()}
+
+
+def run(cfg: dict, only: list[str] | None = None) -> None:
     raw: Path = cfg["paths"]["raw"]
+    sc = cfg["scrape"]
     session = requests.Session()
-    records = discover(cfg, session, only)
-    print(f"discovered {len(records)} transcripts")
-    for i, r in enumerate(records, 1):
-        r["file"] = f"{r['ticker']}_{r['fiscal_quarter'].replace(' ', '-')}.html"
-        out = raw / r["file"]
-        if out.exists():
-            continue
+    session.mount("https://", requests.adapters.HTTPAdapter(pool_maxsize=sc["workers"]))
+    limiter = RateLimiter(sc["requests_per_second"])
+
+    urls = discover(cfg, session, limiter)
+    done = load_index(raw)
+    # Retry earlier transient failures; 404s and pages without a transcript are final.
+    todo = [u for u in sorted(urls, key=urls.get, reverse=True)
+            if u not in done or done[u]["status"] == "error"]
+    print(f"{len(urls)} transcript URLs in sitemaps; {len(done)} already indexed; {len(todo)} to fetch",
+          flush=True)
+
+    lock = threading.Lock()
+    counts = {"ok": 0, "missing": 0, "error": 0, "skipped": 0}
+    started = time.monotonic()
+
+    def fetch(url: str) -> None:
+        rec = {"url": url, "published": urls[url]}
         try:
-            out.write_text(get(session, r["url"]))
-            print(f"[{i}/{len(records)}] {r['ticker']} {r['fiscal_quarter']}")
-        except (FileNotFoundError, RuntimeError) as e:
-            print(f"[{i}/{len(records)}] skip {e}")
-        time.sleep(cfg["scrape"]["delay_seconds"] + random.uniform(0, 1.5))
-    index_path = raw / "index.json"
-    index = {r["url"]: r for r in json.loads(index_path.read_text())} if index_path.exists() else {}
-    index.update({r["url"]: r for r in records if (raw / r["file"]).exists()})
-    index_path.write_text(json.dumps(sorted(index.values(), key=lambda r: r["file"]), indent=1))
-    return list(index.values())
+            info, doc = extract(get(session, url, limiter))
+            if only and info["ticker"] not in only:
+                rec["status"] = "skipped"
+            else:
+                path = page_path(raw, url)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(gzip.compress(doc.encode()))
+                rec.update(info, status="ok", file=str(path.relative_to(raw)))
+        except (FileNotFoundError, ValueError) as e:
+            rec.update(status="missing", error=type(e).__name__)
+        except RuntimeError as e:
+            rec.update(status="error", error=str(e))
+        with lock:
+            if rec["status"] != "skipped":
+                index_file.write(json.dumps(rec) + "\n")
+                index_file.flush()
+            counts[rec["status"]] += 1
+            n = sum(counts.values())
+            if n % 100 == 0 or n == len(todo):
+                rate = n / (time.monotonic() - started)
+                eta = (len(todo) - n) / rate / 3600
+                print(f"[{n}/{len(todo)}] {counts} {rate:.2f} pages/s, ~{eta:.1f} h left", flush=True)
+
+    with open(raw / "index.jsonl", "a") as index_file, ThreadPoolExecutor(sc["workers"]) as pool:
+        list(pool.map(fetch, todo))
+    print(f"done: {counts}")

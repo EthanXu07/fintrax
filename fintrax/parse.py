@@ -12,9 +12,10 @@ Two page layouts exist:
 Each turn becomes a row: ticker, call_date, section (prepared|qna), speaker,
 speaker_type (executive|analyst|operator), role, text.
 """
-import json
+import gzip
 import re
 import unicodedata
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -70,11 +71,17 @@ def call_datetime(soup: BeautifulSoup) -> tuple[str | None, str | None]:
     for republished transcripts, by years.
     """
     node = soup.select_one("#date")
-    if node is None:
-        return None, None
-    text = clean((node.find_next_sibling() or node).get_text(" ") if node.name == "h2" else node.get_text(" "))
-    if node.name == "span" and (em := soup.select_one("#time")):
-        text += " " + clean(em.get_text())
+    if node is not None:
+        text = clean((node.find_next_sibling() or node).get_text(" ") if node.name == "h2" else node.get_text(" "))
+        if node.name == "span" and (em := soup.select_one("#time")):
+            text += " " + clean(em.get_text())
+    else:
+        # 2017-2018 pages: a header paragraph "Company (TKR) / Q4 2017 Earnings Call / Feb. 8, 2018, 9:00 a.m. ET".
+        header = next((p for p in soup.find_all("p", limit=6)
+                       if "call" in p.get_text().lower() and DATE_RE.search(p.get_text(" "))), None)
+        if header is None:
+            return None, None
+        text = clean(header.get_text(" "))
     m = DATE_RE.search(text)
     if not m:
         return None, None
@@ -240,38 +247,69 @@ def parse_page(html: str) -> tuple[tuple[str | None, str | None], list[dict]]:
     return call_datetime(soup), out
 
 
-def run(cfg: dict) -> pd.DataFrame:
+def parse_record(args: tuple[dict, str, int]) -> tuple[dict, list[dict]]:
+    """Parse one stored page -> (call stats, turn rows). Runs in a worker process."""
+    rec, raw, min_words = args
+    stat = {"url": rec["url"], "ticker": rec.get("ticker", ""), "published": rec["published"],
+            "call_date": None, "ok": False, "both_sections": False}
+    try:
+        html = gzip.decompress((Path(raw) / rec["file"]).read_bytes()).decode()
+        (call_date, call_time), turns = parse_page(html)
+    except (ValueError, OSError, AttributeError) as e:
+        stat["error"] = type(e).__name__
+        return stat, []
+    words = {sec: sum(len(t["text"].split()) for t in turns
+                      if t["section"] == sec and t["speaker_type"] == "executive")
+             for sec in ("prepared", "qna")}
+    stat.update(call_date=call_date, prepared_words=words["prepared"], qna_words=words["qna"],
+                both_sections=min(words.values()) > 0,
+                ok=bool(call_date and stat["ticker"]) and min(words.values()) >= min_words)
+    if not stat["ok"]:
+        return stat, []
+    base = {"ticker": stat["ticker"], "company": rec.get("company", ""), "call_date": call_date,
+            "call_time_et": call_time, "fiscal_quarter": rec.get("fiscal_quarter", ""), "url": rec["url"]}
+    return stat, [{**base, **t} for t in turns]
+
+
+def run(cfg: dict) -> None:
+    from fintrax.scrape import load_index
+
     raw: Path = cfg["paths"]["raw"]
+    out_dir = cfg["paths"]["interim"] / "turns"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("part-*.parquet"):
+        old.unlink()
+    records = [r for r in load_index(raw).values() if r["status"] == "ok"]
+    # Oldest publish date first, so a republished copy loses to the original below.
+    records.sort(key=lambda r: r["published"])
     min_words = cfg["parse"]["min_section_words"]
-    index = json.loads((raw / "index.json").read_text())
-    rows, stats = [], []
-    for rec in index:
-        try:
-            (call_date, call_time), turns = parse_page((raw / rec["file"]).read_text())
-        except (ValueError, FileNotFoundError) as e:
-            print(f"parse failed {rec['file']}: {e}")
-            continue
-        mgmt_words = {sec: sum(len(t["text"].split()) for t in turns
-                               if t["section"] == sec and t["speaker_type"] == "executive")
-                      for sec in ("prepared", "qna")}
-        stats.append({"file": rec["file"], "ticker": rec["ticker"], "call_date": call_date,
-                      "both_sections": min(mgmt_words.values()) > 0,
-                      "ok": call_date is not None and min(mgmt_words.values()) >= min_words})
-        for t in turns:
-            rows.append({"ticker": rec["ticker"], "call_date": call_date, "call_time_et": call_time,
-                         "fiscal_quarter": rec["fiscal_quarter"], "file": rec["file"], **t})
+
+    stats, seen, part, buffer = [], set(), 0, []
+    with ProcessPoolExecutor(cfg["parse"]["workers"]) as pool:
+        for stat, rows in pool.map(parse_record, [(r, str(raw), min_words) for r in records], chunksize=32):
+            key = (stat["ticker"], stat["call_date"])
+            # Republished transcripts appear under several URLs; keep one per actual call.
+            if stat["ok"] and key in seen:
+                stat.update(ok=False, error="duplicate")
+                rows = []
+            seen.add(key)
+            stats.append(stat)
+            buffer.extend(rows)
+            if len(buffer) >= 200_000:
+                pd.DataFrame(buffer).to_parquet(out_dir / f"part-{part:04d}.parquet", index=False)
+                part, buffer = part + 1, []
+    if buffer:
+        pd.DataFrame(buffer).to_parquet(out_dir / f"part-{part:04d}.parquet", index=False)
+
     st = pd.DataFrame(stats)
-    # Republished transcripts can appear under two URLs; keep one per actual call.
-    dupes = st.duplicated(["ticker", "call_date"])
-    keep = set(st.loc[st["ok"] & ~dupes, "file"])
-    df = pd.DataFrame(rows)
-    df = df[df["file"].isin(keep)].drop(columns="file").reset_index(drop=True)
-    out = cfg["paths"]["interim"] / "turns.parquet"
-    df.to_parquet(out, index=False)
+    st.to_parquet(cfg["paths"]["interim"] / "parse_stats.parquet", index=False)
     print(f"{len(st)} pages parsed, {st['both_sections'].mean():.1%} with both sections; "
-          f"kept {len(keep)} calls ({len(df)} turns) -> {out}")
-    dropped = st[~st["file"].isin(keep)]
-    if len(dropped):
-        print(f"dropped {len(dropped)} (duplicate, no date, or < {min_words} management words in a section):",
-              dropped["file"].tolist())
-    return df
+          f"kept {int(st['ok'].sum())} calls from {st.loc[st['ok'], 'ticker'].nunique()} tickers -> {out_dir}")
+    if "error" not in st:
+        st["error"] = None
+    reasons = st.loc[~st["ok"], "error"].fillna("short section or no date/ticker")
+    print("dropped:", reasons.value_counts().to_dict())
+
+
+def read_turns(cfg: dict, columns: list[str] | None = None) -> pd.DataFrame:
+    return pd.read_parquet(cfg["paths"]["interim"] / "turns", columns=columns)
