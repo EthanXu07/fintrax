@@ -1,0 +1,39 @@
+tickers: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, BAC, XOM, CVX, JNJ, PFE, UNH, WMT, COST,
+          HD, NKE, DIS, NFLX, INTC, AMD, CRM, ORCL, KO, PEP, MCD, BA, CAT, TSLA, V]
+
+scrape:
+  # Window for monthly fool.com sitemaps (inclusive); newest 8 calls per ticker are kept.
+  start_month: "2024-04"
+  end_month: "2026-10"
+  delay_seconds: 2.5
+  max_calls_per_ticker: 8
+
+paths:
+  raw: data/raw
+  interim: data/interim
+  processed: data/processed
+  model: models/fintrax-confidence
+  results: results
+
+label:
+  min_tokens: 6
+  neutral_ratio: 1.0      # neutral samples kept per (low+high)/2 sample
+  seed: 42
+
+train:
+  base_model: ProsusAI/finbert
+  max_len: 128
+  lr: 2.0e-5
+  epochs: 3
+  batch_size: 16
+
+signals:
+  min_history: 20         # calls needed before z-scores are trusted
+  buy_gap_z: 0.5
+  buy_conf_z: 0.0
+  sell_gap_z: -0.5
+  sell_conf_z: -1.0
+
+backtest:
+  benchmark: SPY
+  horizons: [1, 5, 20]

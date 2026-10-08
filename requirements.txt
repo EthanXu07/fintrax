@@ -1,0 +1,14 @@
+torch>=2.14
+transformers>=5.19
+accelerate>=1.15
+scikit-learn>=1.9
+pandas>=3.0
+pyarrow>=25.0
+requests>=2.34
+beautifulsoup4>=4.15
+lxml>=6.1
+yfinance>=1.7
+matplotlib>=3.11
+PyYAML>=6.0
+scipy>=1.18
+pytest>=9.1
