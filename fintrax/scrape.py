@@ -63,10 +63,15 @@ def match_ticker(slug: str, tickers: set[str]) -> str | None:
 def to_record(match: re.Match, ticker: str) -> dict:
     return {
         "ticker": ticker,
-        "call_date": f"{match.group(1)}-{match.group(2)}-{match.group(3)}",
+        "published": f"{match.group(1)}-{match.group(2)}-{match.group(3)}",
         "fiscal_quarter": f"{match.group(5).upper()} {match.group(6)}",
         "url": "https://www.fool.com" + match.group(0).rstrip("/") + "/",
     }
+
+
+def quarter_key(fiscal_quarter: str) -> tuple[int, int]:
+    q, year = fiscal_quarter.split()
+    return int(year), int(q[1])
 
 
 def cached_get(session: requests.Session, url: str, path: Path, refresh: bool, delay: float) -> str:
@@ -77,7 +82,7 @@ def cached_get(session: requests.Session, url: str, path: Path, refresh: bool, d
 
 
 def discover(cfg: dict, session: requests.Session, only: list[str] | None = None) -> list[dict]:
-    """Return transcript records for configured tickers, newest first."""
+    """Return transcript records for configured tickers, newest fiscal quarter first."""
     tickers = set(only or cfg["tickers"])
     sc = cfg["scrape"]
     cache = cfg["paths"]["raw"] / "discovery"
@@ -113,8 +118,10 @@ def discover(cfg: dict, session: requests.Session, only: list[str] | None = None
                 found.setdefault(rec["url"], rec)
 
     start = sc["start_month"] + "-01"
-    records = sorted((r for r in found.values() if r["call_date"] >= start),
-                     key=lambda r: r["call_date"], reverse=True)
+    # Fool republishes old calls under new URL dates, so rank by fiscal quarter
+    # (comparable within a ticker); parse.py reads the true call date from the page.
+    records = sorted((r for r in found.values() if r["published"] >= start),
+                     key=lambda r: (r["ticker"], quarter_key(r["fiscal_quarter"])), reverse=True)
     # Keep the newest N calls per ticker; drop duplicate (ticker, quarter) URLs.
     kept, seen, per_ticker = [], set(), {}
     for r in records:
@@ -133,13 +140,13 @@ def run(cfg: dict, only: list[str] | None = None) -> list[dict]:
     records = discover(cfg, session, only)
     print(f"discovered {len(records)} transcripts")
     for i, r in enumerate(records, 1):
-        r["file"] = f"{r['ticker']}_{r['call_date']}.html"
+        r["file"] = f"{r['ticker']}_{r['fiscal_quarter'].replace(' ', '-')}.html"
         out = raw / r["file"]
         if out.exists():
             continue
         try:
             out.write_text(get(session, r["url"]))
-            print(f"[{i}/{len(records)}] {r['ticker']} {r['call_date']}")
+            print(f"[{i}/{len(records)}] {r['ticker']} {r['fiscal_quarter']}")
         except (FileNotFoundError, RuntimeError) as e:
             print(f"[{i}/{len(records)}] skip {e}")
         time.sleep(cfg["scrape"]["delay_seconds"] + random.uniform(0, 1.5))

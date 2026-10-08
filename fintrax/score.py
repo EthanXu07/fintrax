@@ -33,7 +33,8 @@ def predict_proba(model_dir: str, texts: list[str], max_len: int, batch_size: in
 
 def call_features(sents: pd.DataFrame) -> pd.DataFrame:
     """One row per call: confidence by section, the Q&A-vs-prepared gap, and QoQ change."""
-    agg = sents.groupby(["call_id", "ticker", "call_date", "section"]).agg(
+    sents = sents.assign(call_time_et=sents["call_time_et"].fillna(""))
+    agg = sents.groupby(["call_id", "ticker", "call_date", "call_time_et", "section"]).agg(
         conf=("confidence", "mean"),
         pct_low=("pred", lambda p: (p == "low").mean()),
         pct_high=("pred", lambda p: (p == "high").mean()),

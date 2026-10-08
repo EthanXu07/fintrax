@@ -8,6 +8,11 @@ scrape:
   delay_seconds: 2.5
   max_calls_per_ticker: 8
 
+parse:
+  # Calls need this many management words in both prepared remarks and Q&A
+  # (some companies post prepared remarks separately and open the call with Q&A).
+  min_section_words: 500
+
 paths:
   raw: data/raw
   interim: data/interim

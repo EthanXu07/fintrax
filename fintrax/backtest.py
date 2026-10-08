@@ -1,9 +1,10 @@
 """Event backtest: does the signal predict post-call returns relative to SPY?
 
-Entry is the open of the first trading day after the call date, which is
-conservative: most calls happen after the close, and for pre-market calls
-this skips the day-one reaction. The h-day return runs from that open to the
-close h trading days later, minus SPY over the same window.
+Entry is the first market open after the call ends: the same day's open for
+pre-market calls (before 9:30 ET), otherwise the next trading day's open. Calls
+held during market hours therefore skip part of the day-one reaction, which is
+conservative. The h-day return runs from that open to the close h trading days
+later, minus SPY over the same window.
 """
 import json
 
@@ -25,8 +26,9 @@ def load_prices(tickers: list[str], start: str) -> dict[str, pd.DataFrame]:
     return {t: data[t][["Open", "Close"]].dropna() for t in tickers if t in data.columns.get_level_values(0)}
 
 
-def window_return(px: pd.DataFrame, call_date: str, h: int) -> float:
-    after = px.index[px.index > pd.Timestamp(call_date)]
+def window_return(px: pd.DataFrame, call_date: str, h: int, premarket: bool = False) -> float:
+    day = pd.Timestamp(call_date)
+    after = px.index[px.index >= day] if premarket else px.index[px.index > day]
     if len(after) < h:
         return np.nan
     entry, exit_ = after[0], after[h - 1]
@@ -39,9 +41,10 @@ def event_returns(sig: pd.DataFrame, prices: dict, benchmark: str, horizons: lis
         if r.ticker not in prices:
             continue
         row = {"ticker": r.ticker, "call_date": r.call_date, "signal": r.signal}
+        premarket = isinstance(r.call_time_et, str) and r.call_time_et < "09:30"
         for h in horizons:
-            stock = window_return(prices[r.ticker], r.call_date, h)
-            bench = window_return(prices[benchmark], r.call_date, h)
+            stock = window_return(prices[r.ticker], r.call_date, h, premarket)
+            bench = window_return(prices[benchmark], r.call_date, h, premarket)
             row[f"excess_{h}d"] = stock - bench
         rows.append(row)
     return pd.DataFrame(rows)
