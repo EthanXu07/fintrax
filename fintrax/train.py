@@ -1,10 +1,12 @@
 """Fine-tune FinBERT into a 3-way confidence classifier (low / neutral / high)."""
 import json
+import re
 
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix, f1_score,
+                             roc_auc_score)
 from torch.utils.data import Dataset
 from transformers import (
     AutoModelForSequenceClassification,
@@ -109,19 +111,36 @@ def run(cfg: dict) -> dict:
 
     test = split["test"]
     y = test["label"].to_numpy()
-    # Leakage check: hide every lexicon cue. Accuracy above the majority baseline
-    # means the model learned context beyond the words that generated its labels.
-    masked = [lexicon.mask_cues(s, tok.mask_token) for s in test["sentence"]]
     result = {
         "train_size": len(split["train"]), "val_size": len(split["val"]), "test_size": len(test),
         "test_calls": int(test["call_id"].nunique()),
         "majority_baseline_accuracy": round(float(np.bincount(y).max() / len(y)), 4),
         "test": evaluate(trainer, ds["test"], y),
-        "test_masked_cues": evaluate(trainer, SentenceDataset(masked, y.tolist(), tok, tc["max_len"]), y),
+        "context_check": context_check(str(paths["model"]), test, tc["max_len"]),
     }
     out = paths["results"] / "metrics.json"
     out.write_text(json.dumps(result, indent=2))
     print(f"test acc {result['test']['accuracy']} macro-F1 {result['test']['macro_f1']} | "
-          f"masked acc {result['test_masked_cues']['accuracy']} | "
+          f"cue-deleted low-vs-high AUC {result['context_check']['auc']} | "
           f"majority {result['majority_baseline_accuracy']} -> {out}")
     return result
+
+
+def context_check(model_dir: str, test: pd.DataFrame, max_len: int) -> dict:
+    """Does the model know anything the lexicon doesn't?
+
+    Test accuracy only shows the model reproduces its weak labels. Here every
+    lexicon cue is deleted from the test's low/high sentences and we ask whether
+    P(high) - P(low) still ranks them correctly (AUC; 0.5 = no signal beyond
+    the lexicon). Neutral sentences are excluded: they have no cues to delete,
+    so they would pass trivially.
+    """
+    from fintrax.score import predict_proba
+
+    cued = test[test["weak_label"] != "neutral"]
+    stripped = [re.sub(r"\s+", " ", lexicon.mask_cues(s, "")).strip() for s in cued["sentence"]]
+    probs, ids = predict_proba(model_dir, stripped, max_len)
+    is_high = (cued["weak_label"] == "high").to_numpy()
+    auc = roc_auc_score(is_high, probs[:, ids["high"]] - probs[:, ids["low"]])
+    return {"n": len(cued), "auc": round(float(auc), 4),
+            "share_predicted_neutral": round(float((probs.argmax(1) == ids["neutral"]).mean()), 4)}
