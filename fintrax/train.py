@@ -17,6 +17,7 @@ from transformers import (
 )
 
 from fintrax import lexicon
+from fintrax.score import Scorer
 
 
 class SentenceDataset(Dataset):
@@ -49,14 +50,15 @@ class WeightedTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-def metrics(pred) -> dict:
-    y_pred = pred.predictions.argmax(-1)
-    return {"accuracy": accuracy_score(pred.label_ids, y_pred),
-            "macro_f1": f1_score(pred.label_ids, y_pred, average="macro")}
+def evaluate(scorer, df: pd.DataFrame) -> dict:
+    """Metrics through the same inference path score.py uses.
 
-
-def evaluate(trainer: Trainer, ds: Dataset, y: np.ndarray) -> dict:
-    y_pred = trainer.predict(ds).predictions.argmax(-1)
+    (Trainer.predict isn't used: with length-grouped sampling its predictions can
+    come back in a different order than the labels.)
+    """
+    probs = scorer(df["sentence"].tolist())
+    to_label = np.array([lexicon.LABELS.index(scorer.id2name[i]) for i in range(probs.shape[1])])
+    y, y_pred = df["label"].to_numpy(), to_label[probs.argmax(1)]
     return {
         "accuracy": round(accuracy_score(y, y_pred), 4),
         "macro_f1": round(f1_score(y, y_pred, average="macro"), 4),
@@ -80,8 +82,8 @@ def run(cfg: dict) -> dict:
     # FinBERT's head predicts sentiment; start the confidence head from scratch.
     model.classifier.reset_parameters()
 
-    ds = {n: SentenceDataset(df["sentence"].tolist(), df["label"].tolist(), tok, tc["max_len"])
-          for n, df in split.items()}
+    ds = {"train": SentenceDataset(split["train"]["sentence"].tolist(), split["train"]["label"].tolist(),
+                                   tok, tc["max_len"])}
     counts = np.bincount(split["train"]["label"], minlength=3)
     weights = torch.tensor(counts.sum() / (3 * np.maximum(counts, 1)), dtype=torch.float)
 
@@ -90,33 +92,32 @@ def run(cfg: dict) -> dict:
         learning_rate=tc["lr"],
         num_train_epochs=tc["epochs"],
         per_device_train_batch_size=tc["batch_size"],
-        per_device_eval_batch_size=64,
+        bf16=tc.get("bf16", False),
+        train_sampling_strategy="group_by_length",  # less padding per batch
         weight_decay=0.01,
         warmup_steps=0.1,  # <1 is a ratio of total steps in transformers v5
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=1,
-        load_best_model_at_end=True,
-        metric_for_best_model="macro_f1",
-        logging_steps=50,
+        save_strategy="no",
+        logging_steps=200,
         report_to="none",
         dataloader_pin_memory=False,  # unsupported on MPS
         seed=cfg["label"]["seed"],
     )
-    trainer = WeightedTrainer(model=model, args=args, train_dataset=ds["train"], eval_dataset=ds["val"],
-                              processing_class=tok, compute_metrics=metrics, class_weights=weights)
+    trainer = WeightedTrainer(model=model, args=args, train_dataset=ds["train"], processing_class=tok,
+                              class_weights=weights)
     trainer.train()
     trainer.save_model(str(paths["model"]))
     tok.save_pretrained(str(paths["model"]))
 
     test = split["test"]
     y = test["label"].to_numpy()
+    scorer = Scorer(str(paths["model"]), tc["max_len"])
     result = {
         "train_size": len(split["train"]), "val_size": len(split["val"]), "test_size": len(test),
-        "test_calls": int(test["call_id"].nunique()),
+        "train_calls": int(split["train"]["call_id"].nunique()), "test_calls": int(test["call_id"].nunique()),
         "majority_baseline_accuracy": round(float(np.bincount(y).max() / len(y)), 4),
-        "test": evaluate(trainer, ds["test"], y),
-        "context_check": context_check(str(paths["model"]), test, tc["max_len"]),
+        "val": {k: v for k, v in evaluate(scorer, split["val"]).items() if k in ("accuracy", "macro_f1")},
+        "test": evaluate(scorer, test),
+        "context_check": context_check(scorer, test),
     }
     out = paths["results"] / "metrics.json"
     out.write_text(json.dumps(result, indent=2))
@@ -126,7 +127,7 @@ def run(cfg: dict) -> dict:
     return result
 
 
-def context_check(model_dir: str, test: pd.DataFrame, max_len: int) -> dict:
+def context_check(scorer, test: pd.DataFrame) -> dict:
     """Does the model know anything the lexicon doesn't?
 
     Test accuracy only shows the model reproduces its weak labels. Here every
@@ -135,11 +136,9 @@ def context_check(model_dir: str, test: pd.DataFrame, max_len: int) -> dict:
     the lexicon). Neutral sentences are excluded: they have no cues to delete,
     so they would pass trivially.
     """
-    from fintrax.score import predict_proba
-
     cued = test[test["weak_label"] != "neutral"]
     stripped = [re.sub(r"\s+", " ", lexicon.mask_cues(s, "")).strip() for s in cued["sentence"]]
-    probs, ids = predict_proba(model_dir, stripped, max_len)
+    probs, ids = scorer(stripped), scorer.label2id
     is_high = (cued["weak_label"] == "high").to_numpy()
     auc = roc_auc_score(is_high, probs[:, ids["high"]] - probs[:, ids["low"]])
     return {"n": len(cued), "auc": round(float(auc), 4),

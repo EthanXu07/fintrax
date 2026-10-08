@@ -29,10 +29,10 @@ def test_mask_cues_removes_every_cue():
 def test_sentences_drop_boilerplate_and_analysts():
     import pandas as pd
     turns = pd.DataFrame([
-        {"ticker": "X", "call_date": "2026-01-01", "call_time_et": "17:00", "section": "prepared", "speaker": "A", "role": "CEO",
+        {"ticker": "X", "company": "X Corp", "call_date": "2026-01-01", "call_time_et": "17:00", "section": "prepared", "speaker": "A", "role": "CEO",
          "speaker_type": "executive",
          "text": "These forward-looking statements involve risk. Our pipeline has never been stronger today."},
-        {"ticker": "X", "call_date": "2026-01-01", "call_time_et": "17:00", "section": "qna", "speaker": "B", "role": "Analyst",
+        {"ticker": "X", "company": "X Corp", "call_date": "2026-01-01", "call_time_et": "17:00", "section": "qna", "speaker": "B", "role": "Analyst",
          "speaker_type": "analyst", "text": "Can you talk about your margin outlook for next year please?"},
     ])
     s = to_sentences(turns, min_tokens=6)

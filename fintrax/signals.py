@@ -12,14 +12,21 @@ import pandas as pd
 
 
 def expanding_z(df: pd.DataFrame, col: str, min_history: int) -> pd.Series:
-    """z-score of each row vs rows with an earlier call_date (ties excluded)."""
-    dates = df["call_date"].to_numpy()
-    values = df[col].to_numpy(dtype=float)
-    z = np.full(len(df), np.nan)
-    for i, d in enumerate(dates):
-        past = values[dates < d]
-        if len(past) >= min_history and past.std(ddof=1) > 0:
-            z[i] = (values[i] - past.mean()) / past.std(ddof=1)
+    """z-score of each row vs rows with an earlier call_date (same-day calls excluded).
+
+    Uses running sums per date, so it's O(n) instead of rescanning history per call.
+    """
+    values = df[col].astype(float)
+    by_date = pd.DataFrame({"d": df["call_date"], "x": values, "x2": values ** 2}).groupby("d").agg(
+        n=("x", "size"), s=("x", "sum"), s2=("x2", "sum"))
+    # Totals over strictly earlier dates.
+    prior = by_date.cumsum().shift(1, fill_value=0).reindex(df["call_date"]).to_numpy()
+    n, s, s2 = prior[:, 0], prior[:, 1], prior[:, 2]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = s / n
+        var = (s2 - n * mean ** 2) / (n - 1)
+        z = (values.to_numpy() - mean) / np.sqrt(var)
+    z[(n < min_history) | ~(var > 0)] = np.nan
     return pd.Series(z, index=df.index)
 
 
@@ -45,7 +52,7 @@ def make_signals(calls: pd.DataFrame, sc: dict) -> pd.DataFrame:
 def run(cfg: dict) -> pd.DataFrame:
     calls = pd.read_parquet(cfg["paths"]["processed"] / "calls.parquet")
     sig = make_signals(calls, cfg["signals"])
-    cols = ["ticker", "call_date", "call_time_et", "conf_prepared", "conf_qna", "gap", "gap_z", "conf_qna_z",
+    cols = ["ticker", "company", "call_date", "call_time_et", "conf_prepared", "conf_qna", "gap", "gap_z", "conf_qna_z",
             "sentiment_prepared", "sentiment_qna", "delta_qoq", "warmup", "signal"]
     out = cfg["paths"]["results"] / "signals.csv"
     sig[cols].round(4).to_csv(out, index=False)
