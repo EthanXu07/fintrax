@@ -18,12 +18,22 @@ import yfinance as yf
 from scipy import stats
 
 ORDER = ["BUY", "HOLD", "SELL"]
+FEATURES = ["gap", "conf_qna", "conf_prepared", "sentiment_qna"]
 COLORS = {"BUY": "#2a9d8f", "HOLD": "#8d99ae", "SELL": "#e76f51"}
 
 
 def load_prices(tickers: list[str], start: str) -> dict[str, pd.DataFrame]:
-    data = yf.download(tickers, start=start, auto_adjust=True, progress=False, group_by="ticker")
-    return {t: data[t][["Open", "Close"]].dropna() for t in tickers if t in data.columns.get_level_values(0)}
+    data = yf.download(tickers, start=start, auto_adjust=True, progress=False, group_by="ticker", threads=False)
+    prices = {t: data[t][["Open", "Close"]].dropna() for t in tickers if t in data.columns.get_level_values(0)}
+    # yfinance occasionally drops a ticker from a batch; retry those one at a time.
+    for t in [t for t in tickers if t not in prices or prices[t].empty]:
+        one = yf.download(t, start=start, auto_adjust=True, progress=False, multi_level_index=False)
+        if not one.empty:
+            prices[t] = one[["Open", "Close"]].dropna()
+    missing = [t for t in tickers if t not in prices or prices[t].empty]
+    if missing:
+        print("no prices for:", missing)
+    return prices
 
 
 def window_return(px: pd.DataFrame, call_date: str, h: int, premarket: bool = False) -> float:
@@ -40,7 +50,8 @@ def event_returns(sig: pd.DataFrame, prices: dict, benchmark: str, horizons: lis
     for r in sig.itertuples():
         if r.ticker not in prices:
             continue
-        row = {"ticker": r.ticker, "call_date": r.call_date, "signal": r.signal}
+        row = {"ticker": r.ticker, "call_date": r.call_date, "signal": r.signal,
+               **{f: getattr(r, f) for f in FEATURES}}
         premarket = isinstance(r.call_time_et, str) and r.call_time_et < "09:30"
         for h in horizons:
             stock = window_return(prices[r.ticker], r.call_date, h, premarket)
@@ -67,7 +78,12 @@ def summarize(ev: pd.DataFrame, horizons: list[int]) -> dict:
             t, p = stats.ttest_ind(buy, sell, equal_var=False)
             spread = {"buy_minus_sell": round(float(buy.mean() - sell.mean()), 5),
                       "t_stat": round(float(t), 3), "p_value": round(float(p), 4)}
-        out[f"{h}d"] = {"by_signal": per, **spread}
+        # Threshold-free check: rank correlation of each raw feature with the return.
+        ic = {}
+        for f in FEATURES:
+            rho, p = stats.spearmanr(d[f], d[col])
+            ic[f] = {"spearman": round(float(rho), 4), "p_value": round(float(p), 4)}
+        out[f"{h}d"] = {"by_signal": per, **spread, "rank_ic": ic}
     return out
 
 
@@ -86,15 +102,16 @@ def plot(ev: pd.DataFrame, horizons: list[int], results) -> None:
     fig.savefig(results / "excess_by_signal.png", dpi=150)
     plt.close(fig)
 
-    # Long BUY / short SELL, one equal-sized 20-day bet per signal, in call-date order.
-    h = horizons[-1]
-    d = ev[ev["signal"] != "HOLD"].dropna(subset=[f"excess_{h}d"]).sort_values("call_date")
-    pnl = np.where(d["signal"] == "BUY", 1, -1) * d[f"excess_{h}d"]
+    # Long BUY / short SELL: one equal-sized bet per signal, summed in call-date order.
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(pd.to_datetime(d["call_date"]), pnl.cumsum() * 100, color="#264653")
+    for h, color in zip(horizons, ["#264653", "#2a9d8f", "#e9c46a"]):
+        d = ev[ev["signal"] != "HOLD"].dropna(subset=[f"excess_{h}d"]).sort_values("call_date")
+        pnl = np.where(d["signal"] == "BUY", 1, -1) * d[f"excess_{h}d"]
+        ax.plot(pd.to_datetime(d["call_date"]), pnl.cumsum() * 100, color=color, label=f"{h}-day")
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_ylabel(f"Cumulative {h}-day excess return (%)")
-    ax.set_title("Long BUY / short SELL, summed per event")
+    ax.set_ylabel("Cumulative excess return (%, summed per event)")
+    ax.set_title("Long BUY / short SELL vs SPY")
+    ax.legend(frameon=False, title="holding period")
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(results / "cumulative_long_short.png", dpi=150)
@@ -114,5 +131,6 @@ def run(cfg: dict) -> dict:
     plot(ev, bc["horizons"], results)
     for k, v in summary.items():
         print(f"{k}: " + ", ".join(f"{s} n={m['n']} mean={m['mean_excess']}" for s, m in v["by_signal"].items())
-              + f" | BUY-SELL {v['buy_minus_sell']} (t={v['t_stat']}, p={v['p_value']})")
+              + f" | BUY-SELL {v['buy_minus_sell']} (t={v['t_stat']}, p={v['p_value']})"
+              + " | IC " + ", ".join(f"{f}={m['spearman']}" for f, m in v["rank_ic"].items()))
     return summary

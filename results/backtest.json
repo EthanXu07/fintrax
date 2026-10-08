@@ -1,0 +1,122 @@
+{
+  "1d": {
+    "by_signal": {
+      "BUY": {
+        "n": 48,
+        "mean_excess": 0.00458,
+        "hit_rate": 0.562
+      },
+      "HOLD": {
+        "n": 67,
+        "mean_excess": -0.00702,
+        "hit_rate": 0.388
+      },
+      "SELL": {
+        "n": 67,
+        "mean_excess": -0.00339,
+        "hit_rate": 0.567
+      }
+    },
+    "buy_minus_sell": 0.00797,
+    "t_stat": 1.481,
+    "p_value": 0.1425,
+    "rank_ic": {
+      "gap": {
+        "spearman": 0.057,
+        "p_value": 0.4448
+      },
+      "conf_qna": {
+        "spearman": 0.0134,
+        "p_value": 0.8578
+      },
+      "conf_prepared": {
+        "spearman": -0.1117,
+        "p_value": 0.1333
+      },
+      "sentiment_qna": {
+        "spearman": 0.0884,
+        "p_value": 0.2352
+      }
+    }
+  },
+  "5d": {
+    "by_signal": {
+      "BUY": {
+        "n": 47,
+        "mean_excess": -0.00066,
+        "hit_rate": 0.468
+      },
+      "HOLD": {
+        "n": 67,
+        "mean_excess": -0.00846,
+        "hit_rate": 0.433
+      },
+      "SELL": {
+        "n": 67,
+        "mean_excess": -0.00293,
+        "hit_rate": 0.522
+      }
+    },
+    "buy_minus_sell": 0.00227,
+    "t_stat": 0.241,
+    "p_value": 0.8099,
+    "rank_ic": {
+      "gap": {
+        "spearman": -0.0047,
+        "p_value": 0.9497
+      },
+      "conf_qna": {
+        "spearman": -0.0609,
+        "p_value": 0.4153
+      },
+      "conf_prepared": {
+        "spearman": -0.1119,
+        "p_value": 0.1337
+      },
+      "sentiment_qna": {
+        "spearman": 0.056,
+        "p_value": 0.4541
+      }
+    }
+  },
+  "20d": {
+    "by_signal": {
+      "BUY": {
+        "n": 47,
+        "mean_excess": -0.00784,
+        "hit_rate": 0.383
+      },
+      "HOLD": {
+        "n": 66,
+        "mean_excess": -0.01067,
+        "hit_rate": 0.424
+      },
+      "SELL": {
+        "n": 66,
+        "mean_excess": 5e-05,
+        "hit_rate": 0.561
+      }
+    },
+    "buy_minus_sell": -0.00788,
+    "t_stat": -0.47,
+    "p_value": 0.6397,
+    "rank_ic": {
+      "gap": {
+        "spearman": -0.0686,
+        "p_value": 0.3617
+      },
+      "conf_qna": {
+        "spearman": -0.1206,
+        "p_value": 0.1078
+      },
+      "conf_prepared": {
+        "spearman": -0.0832,
+        "p_value": 0.2682
+      },
+      "sentiment_qna": {
+        "spearman": 0.0532,
+        "p_value": 0.4791
+      }
+    }
+  }
+}
