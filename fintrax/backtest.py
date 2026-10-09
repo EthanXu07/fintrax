@@ -1,17 +1,14 @@
-"""Event backtest: do confidence signals predict post-call returns relative to SPY?
+"""Evaluation appendix: how did the confidence signals play out? (results/evaluation/)
 
+The signals in results/signals.csv are the product; this stage only checks them.
 Entry is the first market open after the call ends: the same day's open for
-pre-market calls (before 9:30 ET), otherwise the next trading day's open. The
-h-day return runs from that open to the close h trading days later, minus SPY
-over the same window.
+pre-market calls (before 9:30 ET), otherwise the next trading day's open.
 
-The strategy itself is the signal-driven inventory in ``inventory.py`` (no fixed
-holding period). The fixed-horizon numbers here are only *signal diagnostics*:
-
-* BUY / HOLD / SELL excess returns at 1/5/20/60 days, with t-stats clustered by
-  month (calls in the same earnings season aren't independent);
-* quintile sorts on raw confidence features within each calendar quarter, so the
-  earlier years can be judged without any thresholds.
+* Signal diagnostics: excess return vs SPY after BUY / HOLD / SELL at 1/5/20/60
+  days, with t-stats clustered by month (calls in the same earnings season aren't
+  independent), and confidence quintiles ranked within each calendar quarter.
+* A signal-driven inventory (``inventory.py``, no fixed holding period) compared
+  with the same dollars in SPY.
 """
 import json
 
@@ -19,10 +16,10 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from fintrax import charts, confidence_signals, inventory, prices
+from fintrax import charts, inventory, prices
 
 ORDER = ["BUY", "HOLD", "SELL"]
-FEATURES = ["gap", "conf_qna", "conf_prepared", "sentiment_qna"]
+FEATURES = ["confidence", "conf_prepared", "conf_qna", "gap"]
 
 
 def entry_index(px: pd.DataFrame, call_date: str, premarket: bool) -> int | None:
@@ -94,7 +91,7 @@ def quarter_quintiles(ev: pd.DataFrame, feature: str) -> pd.Series:
 def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
     out = {"events": int(len(ev)), "tickers": int(ev["ticker"].nunique()),
            "first_entry": str(ev["entry_date"].min().date()), "last_entry": str(ev["entry_date"].max().date())}
-    for f in ("gap", "conf_qna"):
+    for f in ("confidence", "gap"):
         ev[f"q_{f}"] = quarter_quintiles(ev, f)
     for h in horizons:
         col = f"excess_{h}d"
@@ -109,7 +106,7 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
                       "hit_rate": round(float((x > 0).mean() if s != "SELL" else (x < 0).mean()), 4)}
         res = {"by_signal": per,
                "buy_minus_sell": clustered_spread(d, col, d["signal"] == "BUY", d["signal"] == "SELL")}
-        for f in ("gap", "conf_qna"):
+        for f in ("confidence", "gap"):
             qmeans = d.groupby(f"q_{f}")[col].mean()
             res[f"quintiles_{f}"] = {
                 "mean_by_quintile": {int(k): round(float(v), 5) for k, v in qmeans.items()},
@@ -126,7 +123,8 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
             by_year[int(y)] = {
                 "n": int(len(g)),
                 "buy_minus_sell": clustered_spread(g, col, g["signal"] == "BUY", g["signal"] == "SELL")["spread"],
-                "gap_q5_minus_q1": clustered_spread(g, col, g["q_gap"] == 5, g["q_gap"] == 1)["spread"],
+                "confidence_q5_minus_q1": clustered_spread(g, col, g["q_confidence"] == 5,
+                                                           g["q_confidence"] == 1)["spread"],
             }
         res["by_year"] = by_year
         out[f"{h}d"] = res
@@ -134,9 +132,12 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
 
 
 def run(cfg: dict) -> dict:
-    bt, results = cfg["backtest"], cfg["paths"]["results"]
+    """Evaluation appendix: how the confidence signals in results/signals.csv played out."""
+    bt = cfg["backtest"]
     horizons = bt["horizons"]
-    sig = pd.read_csv(results / "signals.csv")
+    out = cfg["paths"]["results"] / "evaluation"
+    out.mkdir(parents=True, exist_ok=True)
+    sig = pd.read_csv(cfg["paths"]["results"] / "signals.csv")
     sig = sig[~sig["warmup"]]
     start = (pd.Timestamp(sig["call_date"].min()) - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
     tickers = sorted(set(sig["ticker"]))
@@ -145,32 +146,26 @@ def run(cfg: dict) -> dict:
     print(f"prices for {len(px)}/{len(tickers)} tickers")
 
     ev = event_returns(sig, px, bench, horizons, bt)
-    ev.to_csv(results / "event_returns.csv.gz", index=False, float_format="%.5f")
-
-    # The strategy: signals add to or clear each stock's inventory; no fixed hold.
+    ev.to_csv(out / "event_returns.csv.gz", index=False, float_format="%.5f")
     trades, open_lots = inventory.run_inventory(ev, px, bench, cfg["inventory"])
     book = inventory.daily_book(trades, px, bench)
     inv = inventory.holdings(open_lots, px, bench)
-    trades.to_csv(results / "trades.csv.gz", index=False, float_format="%.4f")
-    book.to_csv(results / "book_daily.csv.gz", float_format="%.4f")
-    inv.to_csv(results / "inventory.csv", index=False, float_format="%.4f")
+    trades.to_csv(out / "trades.csv.gz", index=False, float_format="%.4f")
+    book.to_csv(out / "book_daily.csv.gz", float_format="%.4f")
+    inv.to_csv(out / "inventory.csv", index=False, float_format="%.4f")
 
-    summary = {"inventory": inventory.summarize(trades, book, inv),
-               "signal_diagnostics": summarize(ev, horizons, bt)}
-    (results / "backtest.json").write_text(json.dumps(summary, indent=2, default=str))
-    charts.make_all(cfg, ev, trades, book, px, summary, bench)
+    summary = {"signal_diagnostics": summarize(ev, horizons, bt),
+               "inventory": inventory.summarize(trades, book, inv)}
+    (out / "evaluation.json").write_text(json.dumps(summary, indent=2, default=str))
+    charts.make_all(cfg, summary, book, out)
 
-    s = summary["inventory"]
-    print(f"inventory: {s['lots_bought']} lots bought, {s['sell_exits']} SELL exits, {s['stocks_held_now']} stocks held now")
-    print(f"  P&L ${s['total_pnl']:,.0f} (realized ${s['realized_pnl']:,.0f}, unrealized ${s['unrealized_pnl']:,.0f}) "
-          f"vs shadow SPY ${s['shadow_spy_pnl']:,.0f} -> excess ${s['excess_pnl']:,.0f}")
-    print(f"  strategy {s['strategy']} | SPY shadow {s['shadow_spy']}")
     d = summary["signal_diagnostics"]
-    confidence_signals.run(cfg)  # confidence-only BUY/SELL view -> results/confidence_only/
+    print(f"evaluation -> {out}: {d['events']} tradeable calls, {d['tickers']} tickers")
     for h in horizons:
         if f"{h}d" not in d:
             continue
-        v = d[f"{h}d"]
-        bs, q = v["buy_minus_sell"], v["quintiles_gap"]["q5_minus_q1"]
-        print(f"  diag {h:>2}d: BUY-SELL {bs['spread']} (t={bs['t_stat']}) | gap Q5-Q1 {q['spread']} (t={q['t_stat']})")
+        bs, q = d[f"{h}d"]["buy_minus_sell"], d[f"{h}d"]["quintiles_confidence"]["q5_minus_q1"]
+        print(f"  {h:>2}d: BUY-SELL {bs['spread']} (t={bs['t_stat']}) | confidence Q5-Q1 {q['spread']} (t={q['t_stat']})")
+    s = summary["inventory"]
+    print(f"  inventory: P&L ${s['total_pnl']:,.0f} vs SPY shadow ${s['shadow_spy_pnl']:,.0f}")
     return summary

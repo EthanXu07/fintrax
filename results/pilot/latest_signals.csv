@@ -1,0 +1,5 @@
+ticker,company,call_date,signal,confidence,confidence_z,conf_prepared,conf_qna,gap,confidence_change
+NKE,,2026-10-01,BUY,0.0725,2.1253,0.0968,0.0348,-0.0621,0.0776
+WMT,,2026-08-20,BUY,-0.0239,0.9807,-0.039,-0.0123,0.0267,0.0253
+NVDA,,2026-08-26,BUY,-0.047,0.7017,0.0539,-0.1095,-0.1634,-0.0341
+COST,,2026-09-24,SELL,-0.2662,-1.9168,0.0582,-0.5534,-0.6116,-0.0353

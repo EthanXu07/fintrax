@@ -2,13 +2,15 @@
 import argparse
 import importlib
 
-STAGES = ["scrape", "parse", "label", "train", "score", "signals", "backtest"]
+# `all` ends at signals (the product). `backtest` is the optional evaluation appendix.
+STAGES = ["scrape", "parse", "label", "train", "score", "signals"]
+EXTRA = ["backtest"]
 MODULES = {"label": "dataset"}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="fintrax")
-    ap.add_argument("stages", nargs="+", choices=STAGES + ["all"])
+    ap.add_argument("stages", nargs="+", choices=STAGES + EXTRA + ["all"])
     ap.add_argument("--tickers", nargs="*", help="scrape only these tickers")
     args = ap.parse_args()
 

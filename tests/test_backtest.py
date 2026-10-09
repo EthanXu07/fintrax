@@ -23,7 +23,7 @@ def test_entry_is_same_day_premarket_else_next_day():
 
 def calls(**overrides) -> pd.DataFrame:
     row = {"ticker": "UP", "company": "Up Inc", "call_date": "2024-02-01", "call_time_et": "16:30", "signal": "BUY",
-           "gap": 0.1, "conf_qna": 0.1, "conf_prepared": 0.0, "sentiment_qna": 0.0}
+           "confidence": 0.075, "gap": 0.1, "conf_qna": 0.1, "conf_prepared": 0.0}
     return pd.DataFrame([row | overrides])
 
 
