@@ -1,14 +1,26 @@
-"""Prepared-vs-Q&A confidence discrepancy -> BUY / HOLD / SELL.
+"""Confidence -> BUY / HOLD / SELL. The core output of Fintrax.
 
-Idea: prepared remarks are scripted and almost always upbeat; Q&A is not.
-Management that stays (or gets more) confident when questioned off-script is a
-positive signal; confidence that collapses in Q&A is a negative one.
+Each call gets one confidence score: the mean P(high) - P(low) from the
+fine-tuned FinBERT over every management sentence (prepared remarks and Q&A
+together, weighted by sentence count). Because tone differs by era and
+companies are compared against each other, the score is z-scored against every
+call dated strictly before it (an expanding window, so no look-ahead):
 
-Each call is z-scored against all calls dated strictly before it (an expanding
-window), so a signal never uses information from the future.
+* BUY  if z > ``buy_z``  : management sounds clearly more confident than usual
+* SELL if z < ``sell_z`` : clearly less confident than usual
+* HOLD otherwise
+
+The prepared-vs-Q&A gap, the share of hedged / certain sentences, and the change
+from the company's previous call are reported alongside as context; they don't
+drive the signal.
 """
 import numpy as np
 import pandas as pd
+
+OUTPUT_COLS = [
+    "ticker", "company", "call_date", "call_time_et", "signal", "confidence", "confidence_z",
+    "conf_prepared", "conf_qna", "gap", "pct_high", "pct_low", "confidence_change", "sentences", "warmup",
+]
 
 
 def expanding_z(df: pd.DataFrame, col: str, min_history: int) -> pd.Series:
@@ -30,33 +42,40 @@ def expanding_z(df: pd.DataFrame, col: str, min_history: int) -> pd.Series:
     return pd.Series(z, index=df.index)
 
 
-def classify(gap_z: float, conf_z: float, sc: dict) -> str:
-    if np.isnan(gap_z) or np.isnan(conf_z):
-        return "HOLD"
-    if gap_z < sc["sell_gap_z"] or conf_z < sc["sell_conf_z"]:
-        return "SELL"
-    if gap_z > sc["buy_gap_z"] and conf_z > sc["buy_conf_z"]:
-        return "BUY"
-    return "HOLD"
+def weighted(calls: pd.DataFrame, prepared: str, qna: str) -> pd.Series:
+    """Sentence-weighted mean of a per-section statistic across both sections."""
+    n_p, n_q = calls["n_prepared"].astype(float), calls["n_qna"].astype(float)
+    return (calls[prepared] * n_p + calls[qna] * n_q) / (n_p + n_q)
 
 
 def make_signals(calls: pd.DataFrame, sc: dict) -> pd.DataFrame:
-    df = calls.sort_values("call_date").reset_index(drop=True).copy()
-    df["gap_z"] = expanding_z(df, "gap", sc["min_history"])
-    df["conf_qna_z"] = expanding_z(df, "conf_qna", sc["min_history"])
-    df["signal"] = [classify(g, c, sc) for g, c in zip(df["gap_z"], df["conf_qna_z"])]
-    df["warmup"] = df["gap_z"].isna()
+    df = calls.sort_values(["call_date", "ticker"]).reset_index(drop=True).copy()
+    df["confidence"] = weighted(df, "conf_prepared", "conf_qna")
+    df["confidence_z"] = expanding_z(df, "confidence", sc["min_history"])
+    df["signal"] = np.select([df["confidence_z"] > sc["buy_z"], df["confidence_z"] < sc["sell_z"]],
+                             ["BUY", "SELL"], "HOLD")
+    df["warmup"] = df["confidence_z"].isna()
+    # Context only.
+    df["gap"] = df["conf_qna"] - df["conf_prepared"]
+    if {"pct_high_prepared", "pct_high_qna"} <= set(df):
+        df["pct_high"] = weighted(df, "pct_high_prepared", "pct_high_qna")
+        df["pct_low"] = weighted(df, "pct_low_prepared", "pct_low_qna")
+    df["sentences"] = df["n_prepared"] + df["n_qna"]
+    df["confidence_change"] = df.groupby("ticker")["confidence"].diff()
+    if "company" not in df:
+        df["company"] = ""
     return df
 
 
 def run(cfg: dict) -> pd.DataFrame:
     calls = pd.read_parquet(cfg["paths"]["processed"] / "calls.parquet")
     sig = make_signals(calls, cfg["signals"])
-    cols = ["ticker", "company", "call_date", "call_time_et", "conf_prepared", "conf_qna", "gap", "gap_z", "conf_qna_z",
-            "sentiment_prepared", "sentiment_qna", "delta_qoq", "warmup", "signal"]
     out = cfg["paths"]["results"] / "signals.csv"
-    sig[cols].round(4).to_csv(out, index=False)
+    sig.reindex(columns=OUTPUT_COLS).round(4).to_csv(out, index=False)
     live = sig[~sig["warmup"]]
-    print(f"{len(sig)} calls ({sig['warmup'].sum()} warm-up) -> {out}")
+    print(f"{len(sig)} calls ({int(sig['warmup'].sum())} warm-up) -> {out}")
     print(live["signal"].value_counts().to_string())
+
+    from fintrax import report  # charts + latest-signal list for the signals above
+    report.run(cfg, sig)
     return sig

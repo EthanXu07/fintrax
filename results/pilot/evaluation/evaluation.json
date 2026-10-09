@@ -1,0 +1,438 @@
+{
+  "signal_diagnostics": {
+    "events": 182,
+    "tickers": 30,
+    "first_entry": "2024-05-31",
+    "last_entry": "2026-10-02",
+    "1d": {
+      "by_signal": {
+        "BUY": {
+          "n": 61,
+          "mean": -0.00418,
+          "median": -0.0022,
+          "hit_rate": 0.4754
+        },
+        "HOLD": {
+          "n": 72,
+          "mean": -0.0025,
+          "median": -0.00526,
+          "hit_rate": 0.4167
+        },
+        "SELL": {
+          "n": 49,
+          "mean": -0.00057,
+          "median": -0.00052,
+          "hit_rate": 0.5306
+        }
+      },
+      "buy_minus_sell": {
+        "spread": 0.00245,
+        "t_stat": 0.331,
+        "p_value": 0.7447,
+        "months": 18
+      },
+      "quintiles_confidence": {
+        "mean_by_quintile": {
+          "1": -0.00539,
+          "2": 0.00259,
+          "3": 0.00375,
+          "4": -0.00683,
+          "5": -0.00234
+        },
+        "q5_minus_q1": {
+          "spread": 0.00978,
+          "t_stat": 1.167,
+          "p_value": 0.2733,
+          "months": 10
+        }
+      },
+      "quintiles_gap": {
+        "mean_by_quintile": {
+          "1": -0.0026,
+          "2": 0.00243,
+          "3": -0.00524,
+          "4": -0.00368,
+          "5": 0.00018
+        },
+        "q5_minus_q1": {
+          "spread": 0.00364,
+          "t_stat": 0.465,
+          "p_value": 0.6541,
+          "months": 9
+        }
+      },
+      "rank_ic": {
+        "confidence": {
+          "spearman": -0.0694,
+          "p_value": 0.3522
+        },
+        "conf_prepared": {
+          "spearman": -0.1117,
+          "p_value": 0.1333
+        },
+        "conf_qna": {
+          "spearman": 0.0134,
+          "p_value": 0.8573
+        },
+        "gap": {
+          "spearman": 0.057,
+          "p_value": 0.4445
+        }
+      },
+      "by_year": {
+        "2024": {
+          "n": 55,
+          "buy_minus_sell": -0.00937,
+          "confidence_q5_minus_q1": -0.00923
+        },
+        "2025": {
+          "n": 56,
+          "buy_minus_sell": -0.00185,
+          "confidence_q5_minus_q1": 0.01585
+        },
+        "2026": {
+          "n": 71,
+          "buy_minus_sell": 0.0173,
+          "confidence_q5_minus_q1": 0.01948
+        }
+      }
+    },
+    "5d": {
+      "by_signal": {
+        "BUY": {
+          "n": 60,
+          "mean": -0.01213,
+          "median": -0.01302,
+          "hit_rate": 0.3333
+        },
+        "HOLD": {
+          "n": 72,
+          "mean": -0.00156,
+          "median": 0.00434,
+          "hit_rate": 0.5278
+        },
+        "SELL": {
+          "n": 49,
+          "mean": 4e-05,
+          "median": 8e-05,
+          "hit_rate": 0.4898
+        }
+      },
+      "buy_minus_sell": {
+        "spread": -0.00552,
+        "t_stat": -0.456,
+        "p_value": 0.6543,
+        "months": 18
+      },
+      "quintiles_confidence": {
+        "mean_by_quintile": {
+          "1": -0.00974,
+          "2": -0.00075,
+          "3": 0.01004,
+          "4": -0.01408,
+          "5": -0.00882
+        },
+        "q5_minus_q1": {
+          "spread": 0.00067,
+          "t_stat": 0.048,
+          "p_value": 0.9628,
+          "months": 10
+        }
+      },
+      "quintiles_gap": {
+        "mean_by_quintile": {
+          "1": -0.00443,
+          "2": -0.00646,
+          "3": 0.00016,
+          "4": -0.00783,
+          "5": -0.00566
+        },
+        "q5_minus_q1": {
+          "spread": -0.00023,
+          "t_stat": -0.02,
+          "p_value": 0.9846,
+          "months": 9
+        }
+      },
+      "rank_ic": {
+        "confidence": {
+          "spearman": -0.1523,
+          "p_value": 0.0406
+        },
+        "conf_prepared": {
+          "spearman": -0.1121,
+          "p_value": 0.1329
+        },
+        "conf_qna": {
+          "spearman": -0.061,
+          "p_value": 0.4148
+        },
+        "gap": {
+          "spearman": -0.0046,
+          "p_value": 0.9507
+        }
+      },
+      "by_year": {
+        "2024": {
+          "n": 55,
+          "buy_minus_sell": -0.02238,
+          "confidence_q5_minus_q1": 0.00288
+        },
+        "2025": {
+          "n": 56,
+          "buy_minus_sell": 0.00442,
+          "confidence_q5_minus_q1": 0.01415
+        },
+        "2026": {
+          "n": 70,
+          "buy_minus_sell": -0.00306,
+          "confidence_q5_minus_q1": -0.0111
+        }
+      }
+    },
+    "20d": {
+      "by_signal": {
+        "BUY": {
+          "n": 60,
+          "mean": -0.02013,
+          "median": -0.0252,
+          "hit_rate": 0.35
+        },
+        "HOLD": {
+          "n": 71,
+          "mean": 0.00358,
+          "median": -0.00732,
+          "hit_rate": 0.4507
+        },
+        "SELL": {
+          "n": 48,
+          "mean": -0.002,
+          "median": -0.01067,
+          "hit_rate": 0.5417
+        }
+      },
+      "buy_minus_sell": {
+        "spread": -0.0166,
+        "t_stat": -0.829,
+        "p_value": 0.4186,
+        "months": 18
+      },
+      "quintiles_confidence": {
+        "mean_by_quintile": {
+          "1": -0.01205,
+          "2": -0.00091,
+          "3": 0.03381,
+          "4": -0.03494,
+          "5": -0.02471
+        },
+        "q5_minus_q1": {
+          "spread": -0.03267,
+          "t_stat": -1.576,
+          "p_value": 0.1495,
+          "months": 10
+        }
+      },
+      "quintiles_gap": {
+        "mean_by_quintile": {
+          "1": -0.01572,
+          "2": 0.01201,
+          "3": 0.01092,
+          "4": -0.02449,
+          "5": -0.02254
+        },
+        "q5_minus_q1": {
+          "spread": 0.00279,
+          "t_stat": 0.116,
+          "p_value": 0.9107,
+          "months": 9
+        }
+      },
+      "rank_ic": {
+        "confidence": {
+          "spearman": -0.1559,
+          "p_value": 0.0372
+        },
+        "conf_prepared": {
+          "spearman": -0.0834,
+          "p_value": 0.2671
+        },
+        "conf_qna": {
+          "spearman": -0.1206,
+          "p_value": 0.1077
+        },
+        "gap": {
+          "spearman": -0.0684,
+          "p_value": 0.3627
+        }
+      },
+      "by_year": {
+        "2024": {
+          "n": 55,
+          "buy_minus_sell": -0.0498,
+          "confidence_q5_minus_q1": -0.03771
+        },
+        "2025": {
+          "n": 56,
+          "buy_minus_sell": 0.00113,
+          "confidence_q5_minus_q1": -0.02781
+        },
+        "2026": {
+          "n": 68,
+          "buy_minus_sell": -0.00961,
+          "confidence_q5_minus_q1": -0.03254
+        }
+      }
+    },
+    "60d": {
+      "by_signal": {
+        "BUY": {
+          "n": 55,
+          "mean": 0.00153,
+          "median": -0.0212,
+          "hit_rate": 0.3818
+        },
+        "HOLD": {
+          "n": 62,
+          "mean": 0.05785,
+          "median": 0.03437,
+          "hit_rate": 0.629
+        },
+        "SELL": {
+          "n": 46,
+          "mean": -0.0133,
+          "median": -0.01701,
+          "hit_rate": 0.587
+        }
+      },
+      "buy_minus_sell": {
+        "spread": 0.01251,
+        "t_stat": 0.338,
+        "p_value": 0.7398,
+        "months": 16
+      },
+      "quintiles_confidence": {
+        "mean_by_quintile": {
+          "1": -0.03779,
+          "2": 0.01022,
+          "3": 0.04998,
+          "4": 0.0324,
+          "5": -0.014
+        },
+        "q5_minus_q1": {
+          "spread": 0.02179,
+          "t_stat": 0.44,
+          "p_value": 0.6701,
+          "months": 10
+        }
+      },
+      "quintiles_gap": {
+        "mean_by_quintile": {
+          "1": -0.00798,
+          "2": -0.01309,
+          "3": 0.0894,
+          "4": -0.013,
+          "5": -0.01406
+        },
+        "q5_minus_q1": {
+          "spread": 0.00483,
+          "t_stat": 0.133,
+          "p_value": 0.8973,
+          "months": 9
+        }
+      },
+      "rank_ic": {
+        "confidence": {
+          "spearman": -0.0366,
+          "p_value": 0.643
+        },
+        "conf_prepared": {
+          "spearman": 0.0285,
+          "p_value": 0.7177
+        },
+        "conf_qna": {
+          "spearman": -0.0528,
+          "p_value": 0.5028
+        },
+        "gap": {
+          "spearman": -0.0808,
+          "p_value": 0.3054
+        }
+      },
+      "by_year": {
+        "2024": {
+          "n": 55,
+          "buy_minus_sell": -0.05009,
+          "confidence_q5_minus_q1": -0.04474
+        },
+        "2025": {
+          "n": 56,
+          "buy_minus_sell": 0.01652,
+          "confidence_q5_minus_q1": 0.00551
+        },
+        "2026": {
+          "n": 52,
+          "buy_minus_sell": 0.08375,
+          "confidence_q5_minus_q1": 0.08391
+        }
+      }
+    }
+  },
+  "inventory": {
+    "lots_bought": 56,
+    "lots_sold": 2,
+    "sell_exits": 2,
+    "skipped_buys_at_cap": 5,
+    "sells_with_nothing_held": 47,
+    "closed_lot_win_rate": 0.0,
+    "closed_lot_beat_spy_rate": 0.0,
+    "median_days_held": 130.0,
+    "realized_pnl": -120.24,
+    "unrealized_pnl": 27592.55,
+    "total_pnl": 27679.68,
+    "shadow_spy_pnl": 13185.37,
+    "excess_pnl": 14494.31,
+    "max_capital_deployed": 54000.0,
+    "stocks_held_now": 18,
+    "strategy": {
+      "annualized_return": 0.246,
+      "annualized_vol": 0.2429,
+      "sharpe": 1.026,
+      "max_drawdown": -0.2618,
+      "total_return": 0.646
+    },
+    "shadow_spy": {
+      "annualized_return": 0.1828,
+      "annualized_vol": 0.1631,
+      "sharpe": 1.111,
+      "max_drawdown": -0.1873,
+      "total_return": 0.4627
+    },
+    "excess": {
+      "annualized_return": 0.0557,
+      "annualized_vol": 0.1679,
+      "sharpe": 0.406,
+      "max_drawdown": -0.2121,
+      "total_return": 0.1306
+    },
+    "by_year": {
+      "2024": {
+        "strategy": -0.1056,
+        "shadow_spy": 0.0823,
+        "excess_pnl": -1394.1,
+        "lots_bought": 16
+      },
+      "2025": {
+        "strategy": 0.2769,
+        "shadow_spy": 0.1768,
+        "excess_pnl": 2283.49,
+        "lots_bought": 19
+      },
+      "2026": {
+        "strategy": 0.4413,
+        "shadow_spy": 0.1485,
+        "excess_pnl": 13604.92,
+        "lots_bought": 21
+      }
+    }
+  }
+}

@@ -1,150 +1,117 @@
 # Fintrax
 
-**How confident does management sound when the script ends?**
+**A confidence model for earnings calls, and the trading signals it produces.**
 
-Fintrax scrapes earnings-call transcripts from The Motley Fool and splits each call into **prepared remarks** and **Q&A**. A **FinBERT** model fine-tuned on management sentences scores each one as **low / neutral / high confidence**. The gap between scripted and unscripted confidence becomes a **BUY / HOLD / SELL** signal. A long-only inventory trades on those signals and is compared against putting the same dollars into SPY.
+Fintrax reads earnings-call transcripts from The Motley Fool and uses a fine-tuned **FinBERT** to score how confident management sounds, sentence by sentence. Each call's confidence is compared with every call before it. A call that sounds clearly more confident than usual is a **BUY**, clearly less confident is a **SELL**, and anything in between is a **HOLD**.
 
-> **Status (Oct 2026):** the full-archive run is in progress. The scraper has found **53,642 transcript URLs** (2017 → today) in fool.com's sitemaps and is downloading them. Retraining, scoring and the backtest run automatically after that. This README describes the current pipeline. The only results so far are from the [202-call pilot](#pilot-results-202-calls), which used an older fixed-holding-period backtest, and will be replaced when the full run finishes.
+> **Status (Oct 2026):** the full-archive run is in progress. **53,642 transcripts** (2017 → today) are being downloaded, after which the model is retrained and every call is scored automatically. The figures below come from the **202-call pilot** (30 large caps, 2024–26) and will be replaced by full-archive versions.
 
 ```mermaid
 flowchart LR
-    A[fool.com monthly sitemaps<br/>53k transcript URLs] -->|scrape.py| B[gzipped transcript pages]
-    B -->|parse.py| C[speaker turns<br/>prepared vs Q&A]
-    C -->|dataset.py + lexicon.py| D[management sentences<br/>+ Loughran-McDonald weak labels]
-    D -->|train.py| E[FinBERT<br/>low / neutral / high]
-    E -->|score.py| F[per-call confidence<br/>prepared, Q&A, gap]
-    F -->|signals.py| G[BUY / HOLD / SELL]
-    G -->|inventory.py| H[long-only inventory<br/>vs same dollars in SPY]
+    A[Motley Fool<br/>earnings-call transcripts] --> B[management sentences<br/>prepared remarks + Q&A]
+    B --> C[FinBERT confidence model<br/>low / neutral / high]
+    C --> D[call confidence<br/>vs all earlier calls]
+    D --> E[BUY / HOLD / SELL]
 ```
 
-## Pipeline
+## The signal
 
-### 1. Scrape — `fintrax/scrape.py`
-- **Discovery:** every `/earnings/call-transcripts/` URL in fool.com's public monthly sitemaps, which `robots.txt` advertises, from 2017 to now.
-- **Metadata from the page:** older URLs are truncated `.aspx` slugs with no ticker, so the ticker, company and fiscal quarter are read from each page (`<meta name="primary_tickers">` and the title).
-- **Politeness:** 1.5 requests/s shared across 3 threads, backing off if the site starts throttling.
-- **Resumable storage:** each URL gets one line in `data/raw/index.jsonl`. Only the gzipped transcript body is kept, about 20 KB per call instead of about 500 KB.
+**`results/signals.csv`** has one row per call. This is the product.
 
-### 2. Parse and split — `fintrax/parse.py`
-Motley Fool has used three page layouts, and the parser handles all of them:
+| Column | Meaning |
+|---|---|
+| `signal` | **BUY / HOLD / SELL** |
+| `confidence` | Mean P(high) − P(low) over every management sentence, from −1 (all hedging) to +1 (all certainty) |
+| `confidence_z` | How that compares with every earlier call, in standard deviations. **This drives the signal.** |
+| `conf_prepared`, `conf_qna` | Confidence in the scripted remarks and in the unscripted Q&A |
+| `gap` | Q&A minus prepared confidence: how much the tone drops off-script (context only) |
+| `pct_high`, `pct_low` | Share of sentences the model calls high- and low-confidence |
+| `confidence_change` | Change from the company's previous call |
 
-| Era | Date location | Prepared vs Q&A boundary |
+**Rules** (`config.yaml → signals`):
+
+| Signal | When | Reading |
 |---|---|---|
-| 2017–18 | header paragraph ("Feb. 8, 2018, 9:00 a.m. ET") | `Prepared Remarks:` / `Questions & Answers:` headers |
-| ~2019–25 | `#date` span | same headers, `Name -- Role` speaker lines |
-| 2025+ | `DATE` section | no header: Q&A starts at the hand-off turn before the first analyst who follows a strict Q&A cue ("first question", "[Operator Instructions]", …) |
+| **BUY** | `confidence_z > +0.5` | Management sounds clearly more certain than calls usually do |
+| **SELL** | `confidence_z < −0.5` | Management is hedging more than usual |
+| **HOLD** | in between | Nothing unusual |
 
-- **Call date:** comes from the page, not the URL, because the URL date is the *publish* date. It lags the call by days, and by years for republished transcripts.
-- **Roles:** investor-relations hosts missing from the participant list, and executives whose names don't match the list ("Jen-Hsun" vs "Jensen" Huang), are still classified as management.
-- **Duplicates:** republished duplicates of the same call are dropped.
-- **Dropped calls:** anything with fewer than 500 management words in either section. These are mostly calls with no Q&A, or pages where Fool merged answers into analyst turns.
-- **Only executives are scored.** Analysts, operators and safe-harbor boilerplate are excluded.
+The z-score uses only calls dated **before** the one being scored, so a signal never uses future information. The first 20 calls are warm-up.
 
-### 3. Weak labels — `fintrax/lexicon.py`, `fintrax/dataset.py`
-There's no labeled dataset of earnings-call confidence, so labels come from the [Loughran-McDonald](https://sraf.nd.edu/loughranmcdonald-master-dictionary/) word lists plus spoken-language phrases. The dictionary is academic-use only, so it's downloaded at runtime and not committed.
+**`results/latest_signals.csv`** lists the strongest BUY and SELL calls from the last 45 days:
+
+![Latest signals](results/pilot/latest_signals.png)
+
+### Signals by stock
+Each chart has two panels. On top, the price is shown for context, with a **green ▲ at every BUY call** and a **red ▼ at every SELL call**. Below, each call's confidence z-score is plotted against the shaded BUY and SELL zones (`results/signal_charts/{TICKER}.png`, `signal_grid.png`).
+
+![Signals by stock](results/pilot/signal_grid.png)
+
+Some companies sound consistently more or less confident than others. In the pilot, NVDA's calls were nearly all BUY and JPM's nearly all SELL. The signal compares each call with *all* earlier calls, not with the company's own history, so `confidence_change` is the column to check for a shift within one company.
+
+### Confidence across the market
+`confidence_distribution.png` shows how calls split into signals and plots prepared vs Q&A confidence, colored by signal:
+
+![Confidence distribution](results/pilot/confidence_distribution.png)
+
+`confidence_index.png` tracks average management confidence across all calls, quarter by quarter, alongside the share of BUY and SELL signals each quarter:
+
+![Confidence index](results/pilot/confidence_index.png)
+
+Nearly every call scores **lower in Q&A than in its prepared remarks**: points fall below the dashed line in the scatter. In the pilot, the share of hedging sentences rose from 12% in prepared remarks to 31% in Q&A.
+
+## The confidence model
+- **Training data:** management sentences from every call. Analysts, operators and safe-harbor boilerplate are removed.
+- **Labels:** there's no labeled dataset of earnings-call confidence, so the training labels come from the [Loughran-McDonald](https://sraf.nd.edu/loughranmcdonald-master-dictionary/) finance word lists plus spoken hedges and certainty phrases. That dictionary is academic-use only, so it's downloaded at runtime and never committed.
 
 | Cue type | Examples | Weight |
 |---|---|---|
-| LM strong modal | *definitely, clearly, never, always* | +1 (*will* +0.5) |
+| Strong modal | *definitely, clearly, never, always* | +1 (*will* +0.5) |
 | Certainty phrases | *confident, on track, committed to, clear line of sight* | +1 |
-| LM weak modal + uncertainty | *may, might, could, perhaps, depend* | −1 |
-| LM moderate modal | *likely, probably, should, would* | −0.5 |
+| Weak modal + uncertainty | *may, might, could, perhaps, depend* | −1 |
+| Moderate modal | *likely, probably, should, would* | −0.5 |
 | Hedge phrases | *too early to tell, hard to say, kind of, we'll see* | −1 |
 | Soft hedges | *I think, we believe* | −0.5 |
 
-How sentences are labeled:
-- **high** if the net score is ≥ 1, **low** if ≤ −1, and **neutral** with no cues at all.
-- Mixed sentences are left out of training. Approximators like *nearly 600,000* aren't counted as hedges.
+A sentence is **high** if its net score is ≥ 1, **low** if ≤ −1, and **neutral** if it has no cues at all. Mixed sentences are left out of training.
 
-The training sample has up to **860k sentences** drawn from every call and class-balanced. Train, validation and test are split 70/15/15 **by call** (hashed, so the split stays stable as calls are added).
+**Fine-tuning:** [`ProsusAI/finbert`](https://huggingface.co/ProsusAI/finbert) gets a fresh low/neutral/high head and is trained on up to 860k class-balanced sentences sampled from every call. Train, validation and test are split by call, so no call's sentences appear in two splits. Training runs in bf16 on Apple Silicon.
 
-### 4. Fine-tune FinBERT — `fintrax/train.py`
-- **Model:** [`ProsusAI/finbert`](https://huggingface.co/ProsusAI/finbert) with a fresh 3-way head and class-weighted loss.
-- **Training:** 1 epoch, lr 3e-5, batch size 64, bf16, with batches grouped by sentence length. That runs at about 150–180 sentences/s on an Apple M5 (MPS).
-- **Test score:** accuracy against the weak labels on held-out calls.
-- **Context check:** every lexicon cue is deleted from the test sentences, and P(high) − P(low) must still rank low vs. high (AUC above 0.5). This checks whether the model learned anything beyond the word lists.
+**Pilot model quality:**
+- 99.1% test accuracy and 0.991 macro-F1 against the weak labels (majority-class baseline: 42.9%).
+- **Context check:** with every lexicon cue deleted from the test sentences, the model still separates low from high confidence at **AUC 0.67**. So it learned more than the word lists, though it remains mostly a smoothed, context-aware version of them.
 
-### 5. Score calls — `fintrax/score.py`
-- Each management sentence gets the confidence index **P(high) − P(low)** ∈ [−1, 1], scored in fp16 at about 1,000–1,400 sentences/s. Scoring resumes where it left off if interrupted.
-- Per call it computes `conf_prepared`, `conf_qna`, **`gap = conf_qna − conf_prepared`**, and the change in Q&A confidence from the company's previous call.
-- FinBERT's own positive/negative sentiment is optional (`score.sentiment`). It doubles scoring time.
+## Getting the transcripts
+| Stage | What it does |
+|---|---|
+| `scrape.py` | Collects every earnings-call transcript URL in fool.com's public monthly sitemaps since 2017, rate-limited (1.5 req/s) and resumable. Ticker, company and fiscal quarter come from each page. |
+| `parse.py` | Handles all three Motley Fool layouts (2017–18, ~2019–25, 2025+). Splits prepared remarks from Q&A, takes the true call date from the page (the URL date is the publish date), classifies speakers, and drops republished duplicates and calls with under 500 management words in either section. |
+| `dataset.py`, `lexicon.py` | Splits turns into sentences and adds the weak labels. |
+| `train.py` | Fine-tunes FinBERT and runs the test and context checks. |
+| `score.py` | Scores every sentence in fp16 (resumable) and aggregates per call. |
+| `signals.py`, `report.py` | Produces the signals and the signal charts. |
 
-### 6. Signals — `fintrax/signals.py`
-Management is nearly always less confident in Q&A (the gap is negative on ~94% of calls), so signals are **relative**. Each call's gap and Q&A confidence are z-scored against **every call held before it**, so there's no look-ahead.
+## Appendix: evaluation
+`python -m fintrax backtest` (not part of `all`) checks how the signals played out. Results go to `results/evaluation/`.
+- **After each signal:** excess return vs SPY at 1/5/20/60 days, with t-stats clustered by month, and returns by confidence quintile within each quarter.
+- **A simple inventory:** a BUY adds a $1,000 lot (max 5 per stock), a SELL exits, long-only, compared with putting the same dollars into SPY.
 
-| Signal | Rule (`config.yaml`) | Meaning |
+**Pilot (182 tradeable calls): no statistically detectable edge.**
+
+| Horizon | BUY − SELL (monthly) | Most − least confident quintile |
 |---|---|---|
-| **BUY** | `gap_z > 0.5` and `conf_qna_z > 0` | Management holds up better than usual off-script |
-| **SELL** | `gap_z < −0.5` or `conf_qna_z < −1` | Confidence collapses under questioning |
-| **HOLD** | otherwise | |
+| 1 day | +0.24% (t = 0.33) | +0.98% (t = 1.17) |
+| 5 days | −0.55% (t = −0.46) | +0.07% (t = 0.05) |
+| 20 days | −1.66% (t = −0.83) | −3.27% (t = −1.58) |
+| 60 days | +1.25% (t = 0.34) | +2.18% (t = 0.44) |
 
-### 7. Inventory backtest — `fintrax/inventory.py`, `fintrax/backtest.py`
-**There's no fixed holding period: the signals manage an inventory.** Each call's signal acts at the first market open after the call ends. For a pre-market call that's the same morning; otherwise it's the next trading day.
-
-| Signal | What the model does |
-|---|---|
-| **BUY** | Buys one **$1,000 lot**, up to **5 lots** per stock. A BUY at the cap is skipped. |
-| **SELL** | **Sells the entire position** in that stock. It's long-only, so a SELL with nothing held does nothing. |
-| **HOLD** | Keeps what it holds. |
-
-- **How long a position lasts:** it stays open until a later call's SELL takes it out, or the stock's price history ends (delisting, acquisition), in which case it closes at the last close.
-- **Benchmark:** every lot is mirrored by a **shadow SPY lot** bought and sold on the same days with the same dollars. "Excess" means versus putting that money into the index instead.
-- **Filters:** stocks under $5 or trading under $1M/day are skipped.
-
-Outputs in `results/`:
-
-| File | Contents |
-|---|---|
-| `trades.csv.gz` | every BUY, SELL, skipped signal and HOLD, with shares, price, realized P&L, SPY P&L and days held |
-| `inventory.csv` | what the model holds now: lots, cost basis, market value, unrealized P&L |
-| `book_daily.csv.gz` | daily mark-to-market of the inventory and its SPY shadow |
-| `backtest.json` | totals, return stats (annualized, Sharpe, drawdown), year by year, and signal diagnostics |
-| `signals.csv` | every call's confidence scores and signal |
-
-**Signal diagnostics.** These are separate from the strategy: the excess return after each signal at fixed 1/5/20/60-day horizons, with t-stats clustered by month (calls in one earnings season aren't independent). Confidence quintiles ranked within each calendar quarter judge the earlier years without any thresholds.
-
-### Confidence-only signals — `fintrax/confidence_signals.py`
-A second, simpler signal uses **only the confidence model**, with no prepared-vs-Q&A comparison:
-- **Score:** the call's overall confidence, the mean P(high) − P(low) over every management sentence.
-- **Signal:** the score is z-scored against all earlier calls. **BUY** if z > 0.5, **SELL** if z < −0.5, otherwise HOLD.
-- **Evaluation:** like the pilot, mean excess return vs SPY after each signal at 1/5/20/60 days, plus a cumulative long-BUY / short-SELL line.
-- **Output:** `results/confidence_only/` (`excess_by_signal.png`, `cumulative_long_short.png`, `signals.csv`, `backtest.json`). It's generated as part of the `backtest` stage.
-
-### Charts — `fintrax/charts.py`
-| Figure | What it shows |
-|---|---|
-| `trades/{TICKER}.png`, `trade_signals_grid.png` | Price with a **green ▲ for each buy** and a **red ▼ for each sell** (labeled with that exit's return). Hollow markers are signals that couldn't trade. The background is green while held, darker with more lots, with a lots-held panel below. |
-| `equity_curve.png` | Inventory P&L vs the same dollars in SPY, growth of $1, capital deployed and stocks held |
-| `by_year.png` | Inventory vs SPY shadow return, year by year |
-| `latest_picks.png` | Strongest BUY and SELL signals from the most recent calls |
-| `excess_by_signal.png`, `confidence_quintiles.png` | Signal diagnostics |
-
-## Pilot results (202 calls)
-<a id="pilot-results-202-calls"></a>The first version ran on 30 large-cap tickers × ~8 quarters (Apr 2024 – Oct 2026) with a **fixed** 1/5/20-day hold. Files are in [`results/pilot/`](results/pilot/).
-
-| | |
-|---|---|
-| Classifier | 99.1% test accuracy / 0.991 macro-F1 against the weak labels (majority baseline 42.9%). Mostly the model reproducing the lexicon. |
-| Beyond the lexicon | With every cue deleted, the model still ranks low vs high at **AUC 0.67** |
-| Main finding | Management was less confident in Q&A than in prepared remarks on **94.6%** of calls. Hedging sentences rose from 12% to 31%. |
-| Trading signal | 1-day BUY − SELL spread +0.80%, **not significant** (t = 1.48, p = 0.14). No edge at 5 or 20 days. |
-
-![Pilot: excess return by signal](results/pilot/excess_by_signal.png)
-
-**Confidence-only signals on the pilot** ([`results/pilot/confidence_only/`](results/pilot/confidence_only/)): 61 BUY / 72 HOLD / 49 SELL on 182 tradeable calls. **No edge**: the monthly BUY − SELL spread is +0.24% at 1 day (t = 0.33), −0.55% at 5 days, −1.66% at 20 days (t = −0.83), and +1.25% at 60 days (t = 0.34). The large 60-day HOLD bar comes from a few outliers in a small sample.
-
-| Excess return by signal | Cumulative long BUY / short SELL |
-|---|---|
-| ![](results/pilot/confidence_only/excess_by_signal.png) | ![](results/pilot/confidence_only/cumulative_long_short.png) |
-
-182 traded calls were too few to detect a modest effect, which is why the pipeline now covers the whole archive.
+The pilot inventory did make more than the SPY shadow (+$27.7k vs +$13.2k). But it held mostly mega-cap tech through a strong market and exited only twice, so that reflects what it happened to own rather than the signal.
 
 ## Limitations
-- **Weak labels.** "Confidence" here means certainty language as defined by a lexicon, not management's actual confidence, and the model mostly reproduces it.
-- **Survivorship bias.** Prices come from Yahoo Finance, which lacks many delisted tickers, so calls from companies that later disappeared drop out of the backtest.
-- **No transaction costs** or slippage in the inventory P&L.
-- **Pooled comparison.** Every company is z-scored against every other company's past calls. Speaking styles differ (e.g. MCD vs JNJ), so per-company baselines would be fairer.
-- **Transcript quality.** Fool's transcripts are machine-assisted. Calls with merged or unlabeled speakers are dropped when a section ends up too short.
+- **Weak labels.** "Confidence" means certainty language as defined by a lexicon, not management's actual conviction.
+- **Pooled comparison.** Calls are z-scored against every company's past calls, so consistently upbeat or cautious companies lean BUY or SELL. Per-company baselines would be fairer.
+- **Transcript quality.** Motley Fool's transcripts are machine-assisted, and calls with merged or unlabeled speakers are dropped.
+- **Evaluation gaps.** Yahoo Finance lacks many delisted tickers (survivorship bias), and there are no transaction costs.
 
 ## Reproduce
 
@@ -153,12 +120,11 @@ make setup                 # python3 -m venv .venv && pip install -r requirement
 make scrape                # ~10 h for the full archive at 1.5 req/s; resumable
 make parse label train     # train ~1 h on Apple Silicon (MPS) or a GPU
 make score                 # ~4 h fp16 for ~14M sentences; resumable
-make signals backtest      # first run downloads prices for every ticker (cached in data/prices)
-make test                  # 31 tests: parser layouts, weak labels, signals, backtest + inventory
+make signals               # signals.csv, latest_signals, signal charts
+make backtest              # optional evaluation appendix
+make test                  # 32 tests
 ```
 
-Or run `python -m fintrax all`. All settings live in [`config.yaml`](config.yaml).
-
-**Data and licensing:** transcripts are © The Motley Fool and the Loughran-McDonald dictionary is free for academic use only, so neither is committed. `data/` and `models/` are gitignored, and the tests use small synthetic fixtures.
+All settings live in [`config.yaml`](config.yaml). Transcripts are © The Motley Fool, so `data/` and `models/` are gitignored, and the tests use synthetic fixtures.
 
 *Research project, not investment advice.*

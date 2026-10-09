@@ -37,17 +37,16 @@ score:
   sentiment: false        # also score FinBERT pos/neg sentiment (doubles scoring time)
 
 signals:
-  min_history: 20         # calls needed before z-scores are trusted
-  buy_gap_z: 0.5
-  buy_conf_z: 0.0
-  sell_gap_z: -0.5
-  sell_conf_z: -1.0
-
-confidence_signals:
-  # Signals from the model's overall call confidence alone (no prepared-vs-Q&A gap).
+  # The core output: each call's overall confidence, z-scored against all earlier calls.
+  min_history: 20          # calls needed before z-scores are trusted
   buy_z: 0.5               # BUY when a call is this many std devs more confident than earlier calls
   sell_z: -0.5             # SELL when this many std devs less confident
 
+report:
+  latest_days: 45          # "latest signals" window
+  chart_tickers: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, JPM, NFLX]
+
+# Evaluation appendix (python -m fintrax backtest): not part of `all`.
 inventory:
   # No fixed holding period: signals add to or clear each stock's inventory.
   lot_dollars: 1000        # a BUY buys this much of the stock at the next open
@@ -60,4 +59,3 @@ backtest:
   min_price: 5.0           # skip penny stocks at entry
   min_dollar_volume: 1000000  # and names trading < $1M/day (20-day average)
   winsorize: 0.01          # clip the top/bottom 1% of returns in the summary stats
-  chart_tickers: [AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, JPM, NFLX]

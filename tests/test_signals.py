@@ -1,18 +1,16 @@
 import numpy as np
 import pandas as pd
 
-from fintrax.signals import classify, expanding_z, make_signals
+from fintrax.signals import expanding_z, make_signals, weighted
 
-SC = {"min_history": 3, "buy_gap_z": 0.5, "buy_conf_z": 0.0, "sell_gap_z": -0.5, "sell_conf_z": -1.0}
+SC = {"min_history": 3, "buy_z": 0.5, "sell_z": -0.5}
 
 
-def test_classify_rules():
-    assert classify(1.0, 0.5, SC) == "BUY"
-    assert classify(-1.0, 0.5, SC) == "SELL"        # confidence collapses in Q&A
-    assert classify(0.0, -2.0, SC) == "SELL"        # Q&A confidence very low overall
-    assert classify(1.0, -0.5, SC) == "HOLD"        # better than script, but still weak
-    assert classify(0.0, 0.0, SC) == "HOLD"
-    assert classify(np.nan, 1.0, SC) == "HOLD"
+def calls(conf: list[float], **extra) -> pd.DataFrame:
+    n = len(conf)
+    return pd.DataFrame({"ticker": ["X"] * n, "call_date": [f"2026-01-{i + 1:02d}" for i in range(n)],
+                         "conf_prepared": conf, "conf_qna": conf, "n_prepared": [10] * n, "n_qna": [30] * n,
+                         **extra})
 
 
 def test_expanding_z_uses_only_earlier_dates():
@@ -24,28 +22,32 @@ def test_expanding_z_uses_only_earlier_dates():
     assert z.iloc[3] == (100 - 1) / 1 and z.iloc[4] == (-100 - 1) / 1
 
 
-def test_make_signals_end_to_end():
-    calls = pd.DataFrame({
-        "call_date": [f"2026-01-0{i}" for i in range(1, 7)],
-        "conf_qna": [0.1, 0.2, 0.3, 0.9, 0.2, -0.8],
-        "gap": [0.0, 0.1, -0.1, 0.8, 0.0, -0.9],
-    })
-    sig = make_signals(calls, SC)
-    assert sig["warmup"].tolist() == [True] * 3 + [False] * 3
-    assert sig["signal"].tolist() == ["HOLD", "HOLD", "HOLD", "BUY", "HOLD", "SELL"]
-
-
-def test_confidence_only_signals_use_overall_confidence_without_lookahead():
-    from fintrax.confidence_signals import make_signals as confidence_signals, overall_confidence
-    calls = pd.DataFrame({
-        "call_date": [f"2026-01-0{i}" for i in range(1, 7)],
-        "conf_prepared": [0.0, 0.1, 0.2, 0.9, 0.1, -0.9],
-        "conf_qna": [0.0, 0.1, 0.2, 0.9, 0.1, -0.9],
-        "n_prepared": [10] * 6, "n_qna": [30] * 6,
-    })
-    # Sentence-weighted: 10 prepared + 30 Q&A sentences.
+def test_confidence_is_sentence_weighted_across_sections():
     two = pd.DataFrame({"conf_prepared": [1.0], "conf_qna": [0.0], "n_prepared": [10], "n_qna": [30]})
-    assert np.isclose(overall_confidence(two).iloc[0], 0.25)
-    sig = confidence_signals(calls, {"buy_z": 0.5, "sell_z": -0.5}, min_history=3)
+    assert np.isclose(weighted(two, "conf_prepared", "conf_qna").iloc[0], 0.25)
+
+
+def test_signals_follow_confidence_z_thresholds():
+    sig = make_signals(calls([0.0, 0.1, 0.2, 0.9, 0.1, -0.9]), SC)
     assert sig["warmup"].tolist() == [True] * 3 + [False] * 3
     assert sig["signal"].tolist() == ["HOLD", "HOLD", "HOLD", "BUY", "HOLD", "SELL"]
+
+
+def test_gap_is_context_only():
+    # Same overall confidence, very different prepared-vs-Q&A gaps -> same signal.
+    base = calls([0.0, 0.1, 0.2, 0.9])
+    flipped = base.copy()
+    flipped.loc[3, ["conf_prepared", "n_prepared", "conf_qna", "n_qna"]] = [0.9, 20, 0.9, 20]
+    a, b = make_signals(base, SC), make_signals(flipped, SC)
+    assert a["signal"].iloc[3] == b["signal"].iloc[3] == "BUY"
+    skewed = base.copy()
+    skewed.loc[3, ["conf_prepared", "conf_qna"]] = [1.5, 0.7]  # weighted mean still 0.9
+    s = make_signals(skewed, SC)
+    assert np.isclose(s["confidence"].iloc[3], 0.9) and s["signal"].iloc[3] == "BUY"
+    assert np.isclose(s["gap"].iloc[3], -0.8)
+
+
+def test_confidence_change_is_per_company():
+    df = pd.concat([calls([0.1, 0.3]), calls([0.5, 0.2]).assign(ticker="Y")], ignore_index=True)
+    sig = make_signals(df, SC).sort_values(["ticker", "call_date"])
+    assert np.allclose(sig["confidence_change"].dropna(), [0.2, -0.3])
