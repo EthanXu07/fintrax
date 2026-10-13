@@ -106,6 +106,8 @@ make backtest            # optional
 make test
 ```
 
+For what to rerun after a change, and a block-by-block explanation of why the code is written the way it is, see [`docs/CODE_WALKTHROUGH.md`](docs/CODE_WALKTHROUGH.md).
+
 Config is in [`config.yaml`](config.yaml). `data/` and `models/` are gitignored since the transcripts are © The Motley Fool. Tests use synthetic fixtures.
 
 Not investment advice.
