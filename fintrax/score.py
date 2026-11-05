@@ -1,9 +1,4 @@
-"""Score every management sentence and aggregate to per-call confidence features.
-
-Per sentence: P(low), P(neutral), P(high) from the fine-tuned model, plus
-FinBERT's original sentiment (P(positive) - P(negative)) as a separate feature.
-Per call and section: confidence index = mean(P(high) - P(low)).
-"""
+"""run the model over every sentence and aggregate per call"""
 import time
 
 import numpy as np
@@ -19,8 +14,6 @@ def device() -> torch.device:
 
 
 class Scorer:
-    """A sequence classifier kept on the GPU, scoring sentences in length-sorted batches."""
-
     def __init__(self, model_dir: str, max_len: int, half: bool = True):
         self.tok = AutoTokenizer.from_pretrained(model_dir)
         dtype = torch.float16 if half and device().type != "cpu" else torch.float32
@@ -31,7 +24,7 @@ class Scorer:
 
     @torch.inference_mode()
     def __call__(self, texts: list[str], batch_size: int = 256) -> np.ndarray:
-        # Sort by length so batches pad less.
+        # sort by length = less padding, way faster
         order = np.argsort([len(t) for t in texts])
         probs = np.zeros((len(texts), self.model.config.num_labels), dtype=np.float32)
         for start in range(0, len(texts), batch_size):
@@ -48,7 +41,6 @@ def predict_proba(model_dir: str, texts: list[str], max_len: int, batch_size: in
 
 
 def call_features(sents: pd.DataFrame) -> pd.DataFrame:
-    """One row per call: confidence by section and the Q&A-vs-prepared gap."""
     sents = sents.assign(call_time_et=sents["call_time_et"].fillna(""), company=sents["company"].fillna(""))
     agg = sents.groupby(["call_id", "ticker", "company", "call_date", "call_time_et", "section"]).agg(
         conf=("confidence", "mean"),
@@ -65,7 +57,7 @@ def call_features(sents: pd.DataFrame) -> pd.DataFrame:
 
 
 def run(cfg: dict) -> pd.DataFrame:
-    """Score every sentence part (resumable: finished parts are skipped) and aggregate per call."""
+    # skips parts that are already scored (unless model is newer)
     paths, max_len = cfg["paths"], cfg["train"]["max_len"]
     src_dir, out_dir = paths["processed"] / "sentences", paths["processed"] / "scored"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +67,7 @@ def run(cfg: dict) -> pd.DataFrame:
     print(f"{len(parts)} sentence parts, {len(todo)} to score on {device()}")
     if todo:
         conf_model = Scorer(str(paths["model"]), max_len)
-        # FinBERT's own sentiment doubles scoring time; it's an optional extra feature.
+        # TODO: sentiment is basically unused now, maybe just remove it
         sent_model = Scorer(cfg["train"]["base_model"], max_len) if cfg["score"]["sentiment"] else None
         labels = np.array(sorted(conf_model.label2id, key=conf_model.label2id.get))
     for i, p in enumerate(todo, 1):

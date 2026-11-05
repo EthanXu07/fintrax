@@ -1,13 +1,8 @@
-"""Discover and download every Motley Fool earnings-call transcript.
+"""scrape motley fool transcripts
 
-Discovery walks fool.com's public monthly sitemaps (https://www.fool.com/sitemap/YYYY/MM,
-advertised in robots.txt) and collects every ``/earnings/call-transcripts/`` URL.
-Old URLs are truncated ``.aspx`` slugs without a ticker, so the ticker, title and
-fiscal quarter come from the page itself (``<meta name="primary_tickers">``).
-
-Fetching is rate-limited across a few worker threads and resumable: each URL gets
-one line in ``index.jsonl`` (ok or failed), and only the transcript body is kept,
-gzipped (~15 KB instead of ~500 KB per page).
+urls come from the monthly sitemaps (fool.com/sitemap/YYYY/MM). old urls don't have
+the ticker in them so we grab it from the primary_tickers meta tag.
+resumable via index.jsonl. only the transcript body is saved (gzipped)
 """
 import gzip
 import hashlib
@@ -42,8 +37,6 @@ def months(start: str, end: str):
 
 
 class RateLimiter:
-    """At most `rate` requests per second across all threads."""
-
     def __init__(self, rate: float):
         self.interval = 1.0 / rate
         self.lock = threading.Lock()
@@ -74,7 +67,7 @@ def get(session: requests.Session, url: str, limiter: RateLimiter, retries: int 
         if r.status_code in (404, 410):
             raise FileNotFoundError(url)
         if r.status_code in (403, 429, 503):
-            # Being throttled: slow everyone down, not just this thread.
+            # getting throttled, back off all threads
             print(f"throttled ({r.status_code}) on attempt {attempt + 1}: {url}", flush=True)
             limiter.penalize(30 * 2 ** attempt)
         time.sleep(5 * 2 ** attempt)
@@ -82,7 +75,6 @@ def get(session: requests.Session, url: str, limiter: RateLimiter, retries: int 
 
 
 def discover(cfg: dict, session: requests.Session, limiter: RateLimiter) -> dict[str, str]:
-    """All transcript URLs in the configured sitemap window -> publish date."""
     sc = cfg["scrape"]
     cache = cfg["paths"]["raw"] / "sitemaps"
     cache.mkdir(parents=True, exist_ok=True)
@@ -92,7 +84,7 @@ def discover(cfg: dict, session: requests.Session, limiter: RateLimiter) -> dict
     for y, m in months(sc["start_month"], end):
         month = f"{y}-{m:02d}"
         path = cache / f"{month}.xml"
-        # The current month's sitemap still grows, so don't trust a cached copy.
+        # current month is still growing
         if not path.exists() or month == current:
             try:
                 path.write_text(get(session, SITEMAP_URL.format(year=y, month=m), limiter))
@@ -109,7 +101,6 @@ def meta(soup: BeautifulSoup, name: str) -> str:
 
 
 def extract(html: str) -> tuple[dict, str]:
-    """Page metadata plus a minimal HTML document holding only the transcript."""
     soup = BeautifulSoup(html, "lxml")
     body = soup.select_one("#article-body-transcript") or soup.select_one(".article-body")
     if body is None:
@@ -131,7 +122,6 @@ def page_path(raw: Path, url: str) -> Path:
 
 
 def load_index(raw: Path) -> dict[str, dict]:
-    """Latest record per URL (a retried URL appears more than once)."""
     path = raw / "index.jsonl"
     if not path.exists():
         return {}
@@ -148,7 +138,7 @@ def run(cfg: dict, only: list[str] | None = None) -> None:
 
     urls = discover(cfg, session, limiter)
     done = load_index(raw)
-    # Retry earlier transient failures; 404s and pages without a transcript are final.
+    # retry errors but not 404s
     todo = [u for u in sorted(urls, key=urls.get, reverse=True)
             if u not in done or done[u]["status"] == "error"]
     print(f"{len(urls)} transcript URLs in sitemaps; {len(done)} already indexed; {len(todo)} to fetch",

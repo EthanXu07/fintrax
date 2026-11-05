@@ -1,14 +1,6 @@
-"""Evaluation appendix: how did the confidence signals play out? (results/evaluation/)
+"""backtest - checks how the signals did after the fact. not part of `all`
 
-The signals in results/signals.csv are the product; this stage only checks them.
-Entry is the first market open after the call ends: the same day's open for
-pre-market calls (before 9:30 ET), otherwise the next trading day's open.
-
-* Signal diagnostics: excess return vs SPY after BUY / HOLD / SELL at 1/5/20/60
-  days, with t-stats clustered by month (calls in the same earnings season aren't
-  independent), and confidence quintiles ranked within each calendar quarter.
-* A signal-driven inventory (``inventory.py``, no fixed holding period) compared
-  with the same dollars in SPY.
+entry = first open after the call (same day if premarket)
 """
 import json
 
@@ -22,13 +14,13 @@ ORDER = ["BUY", "HOLD", "SELL"]
 FEATURES = ["confidence", "conf_prepared", "conf_qna", "gap"]
 
 
-def entry_index(px: pd.DataFrame, call_date: str, premarket: bool) -> int | None:
+def entry_index(px, call_date, premarket):
     day = pd.Timestamp(call_date)
     i = px.index.searchsorted(day, side="left" if premarket else "right")
     return i if i < len(px) else None
 
 
-def event_returns(sig: pd.DataFrame, px: dict, bench: pd.DataFrame, horizons: list[int], bt: dict) -> pd.DataFrame:
+def event_returns(sig, px, bench, horizons, bt):
     rows = []
     for r in sig.itertuples():
         p = px.get(r.ticker)
@@ -40,7 +32,7 @@ def event_returns(sig: pd.DataFrame, px: dict, bench: pd.DataFrame, horizons: li
             continue
         entry_day, entry_px = p.index[i], p["Open"].iloc[i]
         dollar_vol = (p["Close"].iloc[i - 20:i] * p["Volume"].iloc[i - 20:i]).mean()
-        # Penny stocks and illiquid names dominate averages with untradeable moves.
+        # skip penny stocks / illiquid stuff, they wreck the averages
         if entry_px < bt["min_price"] or dollar_vol < bt["min_dollar_volume"]:
             continue
         j = bench.index.searchsorted(entry_day)
@@ -70,7 +62,7 @@ def winsorize(x: pd.Series, q: float) -> pd.Series:
 
 
 def clustered_spread(d: pd.DataFrame, col: str, long_mask, short_mask) -> dict:
-    """Mean(long) - mean(short) per month, then a t-test across months."""
+    # avg per month first then t-test across months
     monthly = pd.DataFrame({"long": d[long_mask].groupby("month")[col].mean(),
                             "short": d[short_mask].groupby("month")[col].mean()}).dropna()
     spread = monthly["long"] - monthly["short"]
@@ -82,7 +74,6 @@ def clustered_spread(d: pd.DataFrame, col: str, long_mask, short_mask) -> dict:
 
 
 def quarter_quintiles(ev: pd.DataFrame, feature: str) -> pd.Series:
-    """Quintile 1-5 of a feature within each calendar quarter of the call."""
     q = pd.to_datetime(ev["call_date"]).dt.to_period("Q")
     return ev.groupby(q)[feature].transform(
         lambda x: pd.qcut(x.rank(method="first"), 5, labels=False) + 1 if len(x) >= 25 else np.nan)
@@ -95,7 +86,7 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
         ev[f"q_{f}"] = quarter_quintiles(ev, f)
     for h in horizons:
         col = f"excess_{h}d"
-        if col not in ev or ev[col].notna().sum() < 30:  # e.g. recent calls without 60 days of prices yet
+        if col not in ev or ev[col].notna().sum() < 30:  # recent calls won't have 60d yet
             continue
         d = ev.dropna(subset=[col]).copy()
         d[col] = winsorize(d[col], bt["winsorize"])
@@ -114,7 +105,7 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
             }
         res["rank_ic"] = {}
         for f in FEATURES:
-            if d[f].notna().sum() < 10:  # e.g. sentiment when score.sentiment is off
+            if d[f].notna().sum() < 10:
                 continue
             rho, p = stats.spearmanr(d[f], d[col], nan_policy="omit")
             res["rank_ic"][f] = {"spearman": round(float(rho), 4), "p_value": round(float(p), 4)}
@@ -132,7 +123,6 @@ def summarize(ev: pd.DataFrame, horizons: list[int], bt: dict) -> dict:
 
 
 def run(cfg: dict) -> dict:
-    """Evaluation appendix: how the confidence signals in results/signals.csv played out."""
     bt = cfg["backtest"]
     horizons = bt["horizons"]
     out = cfg["paths"]["results"] / "evaluation"
@@ -143,7 +133,7 @@ def run(cfg: dict) -> dict:
     tickers = sorted(set(sig["ticker"]))
     px = prices.load(tickers + [bt["benchmark"]], start, cfg["paths"]["prices"])
     bench = px.pop(bt["benchmark"])
-    print(f"prices for {len(px)}/{len(tickers)} tickers")
+    print("prices for", len(px), "/", len(tickers), "tickers")
 
     ev = event_returns(sig, px, bench, horizons, bt)
     ev.to_csv(out / "event_returns.csv.gz", index=False, float_format="%.5f")

@@ -1,18 +1,7 @@
-"""Confidence -> BUY / HOLD / SELL. The core output of Fintrax.
+"""confidence -> BUY/HOLD/SELL
 
-Each call gets one confidence score: the mean P(high) - P(low) from the
-fine-tuned FinBERT over every management sentence (prepared remarks and Q&A
-together, weighted by sentence count). Because tone differs by era and
-companies are compared against each other, the score is z-scored against every
-call dated strictly before it (an expanding window, so no look-ahead):
-
-* BUY  if z > ``buy_z``  : management sounds clearly more confident than usual
-* SELL if z < ``sell_z`` : clearly less confident than usual
-* HOLD otherwise
-
-The prepared-vs-Q&A gap, the share of hedged / certain sentences, and the change
-from the company's previous call are reported alongside as context; they don't
-drive the signal.
+confidence is z-scored against all *earlier* calls (no lookahead).
+z > buy_z -> BUY, z < sell_z -> SELL, else HOLD
 """
 import numpy as np
 import pandas as pd
@@ -24,14 +13,10 @@ OUTPUT_COLS = [
 
 
 def expanding_z(df: pd.DataFrame, col: str, min_history: int) -> pd.Series:
-    """z-score of each row vs rows with an earlier call_date (same-day calls excluded).
-
-    Uses running sums per date, so it's O(n) instead of rescanning history per call.
-    """
+    # z vs everything strictly before this date. running sums so it's not O(n^2)
     values = df[col].astype(float)
     by_date = pd.DataFrame({"d": df["call_date"], "x": values, "x2": values ** 2}).groupby("d").agg(
         n=("x", "size"), s=("x", "sum"), s2=("x2", "sum"))
-    # Totals over strictly earlier dates.
     prior = by_date.cumsum().shift(1, fill_value=0).reindex(df["call_date"]).to_numpy()
     n, s, s2 = prior[:, 0], prior[:, 1], prior[:, 2]
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -42,8 +27,7 @@ def expanding_z(df: pd.DataFrame, col: str, min_history: int) -> pd.Series:
     return pd.Series(z, index=df.index)
 
 
-def weighted(calls: pd.DataFrame, prepared: str, qna: str) -> pd.Series:
-    """Sentence-weighted mean of a per-section statistic across both sections."""
+def weighted(calls, prepared, qna):
     n_p, n_q = calls["n_prepared"].astype(float), calls["n_qna"].astype(float)
     return (calls[prepared] * n_p + calls[qna] * n_q) / (n_p + n_q)
 
@@ -55,7 +39,7 @@ def make_signals(calls: pd.DataFrame, sc: dict) -> pd.DataFrame:
     df["signal"] = np.select([df["confidence_z"] > sc["buy_z"], df["confidence_z"] < sc["sell_z"]],
                              ["BUY", "SELL"], "HOLD")
     df["warmup"] = df["confidence_z"].isna()
-    # Context only.
+    # extra stuff, doesn't affect signal
     df["gap"] = df["conf_qna"] - df["conf_prepared"]
     if {"pct_high_prepared", "pct_high_qna"} <= set(df):
         df["pct_high"] = weighted(df, "pct_high_prepared", "pct_high_qna")
@@ -76,6 +60,6 @@ def run(cfg: dict) -> pd.DataFrame:
     print(f"{len(sig)} calls ({int(sig['warmup'].sum())} warm-up) -> {out}")
     print(live["signal"].value_counts().to_string())
 
-    from fintrax import report  # charts + latest-signal list for the signals above
+    from fintrax import report
     report.run(cfg, sig)
     return sig

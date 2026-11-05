@@ -1,16 +1,8 @@
-"""Clean Motley Fool transcript HTML and split it into speaker turns.
+"""parse fool.com transcript html into speaker turns
 
-Two page layouts exist:
-
-* legacy (through ~2025): ``<h2>Prepared Remarks:</h2>`` / ``<h2>Questions & Answers:</h2>``
-  headers, speaker lines ``<p><strong>Name</strong> -- <em>Role</em></p>`` followed by
-  text paragraphs, and a trailing "Call participants" list.
-* current: a "CALL PARTICIPANTS" bullet list (``Role - Name``) up top and a
-  "Full Conference Call Transcript" section of ``<p><strong>Name:</strong> text</p>``
-  turns with no Q&A header, so the Q&A boundary is inferred.
-
-Each turn becomes a row: ticker, call_date, section (prepared|qna), speaker,
-speaker_type (executive|analyst|operator), role, text.
+old layout has Prepared Remarks / Questions & Answers h2s.
+new layout (2025+) just has a participants list + one big transcript section so
+the Q&A split has to be guessed (see split_qna)
 """
 import gzip
 import re
@@ -21,8 +13,7 @@ from pathlib import Path
 import pandas as pd
 from bs4 import BeautifulSoup, Tag
 
-# Phrases that mark the hand-off to Q&A. Deliberately strict: an opening line like
-# "after the prepared remarks we'll open the call to questions" must not match.
+# kept this strict on purpose - intros like "after prepared remarks we'll open it up for questions" shouldn't match
 QNA_CUE = re.compile(
     r"first question|next question|question-and-answer session|question and answer session|"
     r"q(?:&| and |-and-)a session|poll (?:the audience )?for questions|poll the audience|"
@@ -31,8 +22,8 @@ QNA_CUE = re.compile(
     r"\[operator instructions\]",
     re.I,
 )
-HANDOFF_WORDS = 80  # longer turns carry real remarks, not just "first question, please"
-MONOLOGUE_WORDS = 300  # unlisted speakers this long are management, not analysts
+HANDOFF_WORDS = 80
+MONOLOGUE_WORDS = 300  # analysts don't talk this long
 FIRST_QUESTION = re.compile(r"first question|question-and-answer session|question and answer session", re.I)
 PARTICIPANT_SEP = re.compile(r"\s+[-–—]+\s+")
 NOISE = re.compile(r"^\s*(\[.*?\]|duration:.*)\s*$", re.I)
@@ -44,13 +35,13 @@ def clean(text: str) -> str:
 
 
 def name_key(name: str) -> str:
-    """Normalize names so 'Amy E. Hood' and 'Amy Hood' match."""
+    # 'Amy E. Hood' == 'Amy Hood'
     parts = re.sub(r"[^a-z ]", "", name.lower()).split()
     return f"{parts[0]} {parts[-1]}" if len(parts) >= 2 else " ".join(parts)
 
 
 def looks_like_name(label: str) -> bool:
-    """'Jane Doe' or 'Analyst (Sam Lee)' -- not a bolded sentence like 'In APLA, revenue was down 2%.'"""
+    # some pages bold whole sentences so check it's actually a name
     return 0 < len(label.split()) <= 7 and not re.search(r"\d|[.!?]\s", label)
 
 
@@ -65,18 +56,14 @@ TIME_RE = re.compile(r"(\d{1,2})(?::(\d{2}))? ?([ap])\.?m", re.I)
 
 
 def call_datetime(soup: BeautifulSoup) -> tuple[str | None, str | None]:
-    """Actual call date (YYYY-MM-DD) and 24h ET time from the page header.
-
-    Fool's URL date is the publish date, which lags the call by days and,
-    for republished transcripts, by years.
-    """
+    # url date is the publish date which can be way off (years for republished ones) so get it from the page
     node = soup.select_one("#date")
     if node is not None:
         text = clean((node.find_next_sibling() or node).get_text(" ") if node.name == "h2" else node.get_text(" "))
         if node.name == "span" and (em := soup.select_one("#time")):
             text += " " + clean(em.get_text())
     else:
-        # 2017-2018 pages: a header paragraph "Company (TKR) / Q4 2017 Earnings Call / Feb. 8, 2018, 9:00 a.m. ET".
+        # 2017-18 pages
         header = next((p for p in soup.find_all("p", limit=6)
                        if "call" in p.get_text().lower() and DATE_RE.search(p.get_text(" "))), None)
         if header is None:
@@ -102,7 +89,7 @@ def article_body(soup: BeautifulSoup) -> Tag:
     return body
 
 
-def parse_legacy(body: Tag) -> list[dict]:
+def parse_legacy(body):
     turns, section, current = [], None, None
     for el in body.find_all(["h2", "p"]):
         if el.name == "h2":
@@ -118,7 +105,7 @@ def parse_legacy(body: Tag) -> list[dict]:
             continue
         strong = el.find("strong")
         text = clean(el.get_text(" "))
-        # Speaker line: the paragraph is just "<strong>Name</strong> [-- <em>Role</em>]".
+        # speaker line
         if strong and clean(strong.get_text()) and text.startswith(clean(strong.get_text())) and (
             " -- " in text or text == clean(strong.get_text())
         ):
@@ -135,7 +122,7 @@ def parse_legacy(body: Tag) -> list[dict]:
 
 
 def lookup_role(participants: dict[str, str], name: str) -> str | None:
-    """Exact first+last match, else a unique last-name match ('Jen-Hsun Huang' -> 'Jensen Huang')."""
+    # fall back to last name (Jen-Hsun Huang vs Jensen Huang lol)
     key = name_key(name)
     if key in participants:
         return participants[key]
@@ -145,7 +132,6 @@ def lookup_role(participants: dict[str, str], name: str) -> str | None:
 
 
 def parse_current(body: Tag) -> list[dict]:
-    # Participant entries are "Role - Name" (or em/en dash), as <li>s or <p>s.
     participants: dict[str, str] = {}
     h = body.find("h2", id="call-participants")
     for sib in h.find_next_siblings() if h else []:
@@ -174,8 +160,7 @@ def parse_current(body: Tag) -> list[dict]:
             text = text[len(label):].strip()
         if current is not None and text and not NOISE.match(text):
             current["paras"].append(text)
-    # Analysts don't deliver 300-word monologues before the first question;
-    # unlisted speakers who do are management the participant list left out.
+    # sometimes execs aren't in the participant list and get marked as analysts. fix that
     first_q = next((i for i, t in enumerate(turns) if FIRST_QUESTION.search(" ".join(t["paras"]))), len(turns))
     unlisted_mgmt = {t["speaker"] for t in turns[:first_q]
                      if t["role"] == "Analyst" and len(" ".join(t["paras"]).split()) >= MONOLOGUE_WORDS}
@@ -186,23 +171,19 @@ def parse_current(body: Tag) -> list[dict]:
 
 
 def split_qna(turns: list[dict]) -> list[dict]:
-    """Label turns prepared/qna when the page has no Q&A header.
+    """figure out where q&a starts when there's no header.
 
-    Q&A starts at the first turn that hands off to questions (operator
-    instructions, "first question", ...); without such a cue, at the first
-    analyst turn. Unlisted speakers before the boundary (usually an
-    investor-relations host the participant list left out) are management.
+    this was the most annoying part. first q&a cue after mgmt actually starts talking,
+    otherwise first analyst turn
     """
-    # Ignore cues before management has said anything substantial: operator
-    # welcomes often contain "[Operator Instructions]" before any remarks.
+    # operator intro usually has [Operator Instructions] in it so skip ahead
     words = [len(" ".join(t["paras"]).split()) for t in turns]
     first_remarks = next((i for i, t in enumerate(turns)
                           if speaker_type(t["speaker"], t["role"]) != "operator" and words[i] >= 150), 0)
     kinds = [speaker_type(t["speaker"], t["role"]) for t in turns]
     cue = next((i for i, t in enumerate(turns)
                 if i > first_remarks and QNA_CUE.search(" ".join(t["paras"]))), None)
-    # The cue often closes a long prepared remark ("With that, let's go to Q&A"),
-    # so Q&A starts at the short hand-off turn right before the next analyst.
+    # cue is usually at the end of a long remark so start at the handoff before the analyst
     analyst = next((i for i in range(cue or 0, len(turns)) if kinds[i] == "analyst"), None)
     if cue is None:
         cue = len(turns) if analyst is None else analyst
@@ -247,8 +228,7 @@ def parse_page(html: str) -> tuple[tuple[str | None, str | None], list[dict]]:
     return call_datetime(soup), out
 
 
-def parse_record(args: tuple[dict, str, int]) -> tuple[dict, list[dict]]:
-    """Parse one stored page -> (call stats, turn rows). Runs in a worker process."""
+def parse_record(args):
     rec, raw, min_words = args
     stat = {"url": rec["url"], "ticker": rec.get("ticker", ""), "published": rec["published"],
             "call_date": None, "ok": False, "both_sections": False}
@@ -280,7 +260,7 @@ def run(cfg: dict) -> None:
     for old in out_dir.glob("part-*.parquet"):
         old.unlink()
     records = [r for r in load_index(raw).values() if r["status"] == "ok"]
-    # Oldest publish date first, so a republished copy loses to the original below.
+    # oldest first so dupes lose to the original
     records.sort(key=lambda r: r["published"])
     min_words = cfg["parse"]["min_section_words"]
 
@@ -288,7 +268,6 @@ def run(cfg: dict) -> None:
     with ProcessPoolExecutor(cfg["parse"]["workers"]) as pool:
         for stat, rows in pool.map(parse_record, [(r, str(raw), min_words) for r in records], chunksize=32):
             key = (stat["ticker"], stat["call_date"])
-            # Republished transcripts appear under several URLs; keep one per actual call.
             if stat["ok"] and key in seen:
                 stat.update(ok=False, error="duplicate")
                 rows = []

@@ -1,14 +1,4 @@
-"""Signal report: what the confidence model says, call by call. No P&L here.
-
-* latest_signals.csv / .png    the most recent calls' BUY and SELL signals, strongest first
-* signal_charts/{TICKER}.png   price for context with a green up-arrow at each BUY call and a
-  + signal_grid.png            red down-arrow at each SELL call, and the call-by-call confidence
-                               z-score underneath with the BUY / SELL thresholds
-* confidence_index.png         average management confidence across all calls, quarter by
-                               quarter, and how many BUY / SELL signals each quarter produced
-* confidence_distribution.png  where calls fall against the thresholds, and prepared vs Q&A
-                               confidence by signal
-"""
+"""signal charts + latest signals csv"""
 import matplotlib
 
 matplotlib.use("Agg")
@@ -64,7 +54,6 @@ def _arrow(ax, x, y, up: bool) -> None:
 
 
 def ticker_panels(ax_px, ax_z, t: pd.DataFrame, px: pd.DataFrame | None, sc: dict) -> None:
-    """Price with BUY/SELL arrows on top (if prices are available), confidence z below."""
     dates = pd.to_datetime(t["call_date"])
     if px is not None and not px.empty:
         p = px.loc[dates.min() - pd.Timedelta(days=60):, "Close"]
@@ -96,7 +85,7 @@ def ticker_panels(ax_px, ax_z, t: pd.DataFrame, px: pd.DataFrame | None, sc: dic
     ax_z.spines[["top", "right"]].set_visible(False)
 
 
-def legend() -> list:
+def legend():
     return [Line2D([], [], marker="^", ls="", color=GREEN, markersize=9, label="BUY call"),
             Line2D([], [], marker="v", ls="", color=RED, markersize=9, label="SELL call"),
             Line2D([], [], marker="o", ls="", color=GRAY, markersize=5, label="HOLD call")]
@@ -119,7 +108,7 @@ def ticker_charts(cfg: dict, sig: pd.DataFrame, out) -> list[str]:
     start = (pd.to_datetime(live["call_date"]).min() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
     try:
         px = prices.load(tickers, start, cfg["paths"]["prices"])
-    except Exception as e:  # price context is optional; the signals don't depend on it
+    except Exception as e:
         print(f"price download failed ({e}); charting confidence only")
         px = {}
     charts = out / "signal_charts"
@@ -164,7 +153,7 @@ def ticker_charts(cfg: dict, sig: pd.DataFrame, out) -> list[str]:
     return tickers
 
 
-def confidence_index(sig: pd.DataFrame, path) -> None:
+def confidence_index(sig, path):
     live = sig[~sig["warmup"]].copy()
     live["quarter"] = pd.to_datetime(live["call_date"]).dt.to_period("Q")
     q = live.groupby("quarter").agg(conf=("confidence", "mean"), calls=("signal", "size"),
@@ -173,7 +162,6 @@ def confidence_index(sig: pd.DataFrame, path) -> None:
     q = q[q["calls"] >= 20]
     if q.empty:
         return
-    # Keep thin quarters as gaps so the line doesn't bridge missing data.
     q = q.reindex(pd.period_range(q.index.min(), q.index.max(), freq="Q"))
     x = q.index.to_timestamp()
     fig, (ax, ax2) = plt.subplots(2, 1, figsize=(12, 6), sharex=True, gridspec_kw={"height_ratios": [2, 1.4]})

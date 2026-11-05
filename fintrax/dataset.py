@@ -1,9 +1,6 @@
-"""Turns -> sentences -> weak labels -> train/val/test sample (split by call).
+"""sentences + weak labels + train/val/test split
 
-Works part by part so tens of thousands of calls never sit in memory at once:
-every management sentence is labeled and written to processed/sentences/, and a
-class-balanced sample of the labeled ones (capped by ``label.max_sentences``)
-becomes the train/val/test sets.
+runs per parquet part so it doesn't blow up memory on the full archive
 """
 import hashlib
 import re
@@ -15,7 +12,7 @@ import pandas as pd
 from fintrax import lexicon
 
 SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(\[$0-9])")
-# Safe-harbor and logistics language is scripted legal boilerplate, not management tone.
+# safe harbor / call logistics junk, not actually management talking
 BOILERPLATE = re.compile(
     r"forward-looking|safe harbor|risk factors|form 10-[kq]|form 8-k|non-gaap|"
     r"(?:undertake|assume)s? no (?:obligation|duty)|webcast|replay|investor relations website|"
@@ -32,7 +29,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def to_sentences(turns: pd.DataFrame, min_tokens: int) -> pd.DataFrame:
-    """Management sentences only: prepared remarks plus executives' Q&A answers."""
+    # only executives (prepared + their q&a answers)
     mgmt = turns[turns["speaker_type"] == "executive"].copy()
     mgmt["call_id"] = mgmt["ticker"] + "_" + mgmt["call_date"]
     mgmt["turn_id"] = np.arange(len(mgmt))
@@ -44,7 +41,7 @@ def to_sentences(turns: pd.DataFrame, min_tokens: int) -> pd.DataFrame:
 
 
 def split_of(call_id: str) -> str:
-    """Deterministic 70/15/15 split by call, stable as new calls are added."""
+    # 70/15/15 by call. hash so it doesn't change when new calls get added
     bucket = int(hashlib.md5(call_id.encode()).hexdigest(), 16) % 100
     return "train" if bucket < 70 else "val" if bucket < 85 else "test"
 
@@ -73,8 +70,8 @@ def run(cfg: dict) -> None:
           f"weak labels: low {int(n_low)}, neutral {int(n_neutral)}, high {int(n_high)}, "
           f"mixed/dropped {int(counts.get('mixed', 0))}")
 
-    # Class-balanced sample: low and high keep their natural ratio; neutral (which
-    # dominates) is cut to the mean of the two; everything scaled to the cap.
+    # neutral is like 80% of everything so cut it down to avg(low, high)
+    # then scale it all down to max_sentences
     target = {"low": n_low, "high": n_high, "neutral": min(n_neutral, lc["neutral_ratio"] * (n_low + n_high) / 2)}
     scale = min(1.0, lc["max_sentences"] / sum(target.values()))
     frac = {k: v * scale / max(counts.get(k, 1), 1) for k, v in target.items()}

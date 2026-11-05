@@ -1,9 +1,4 @@
-"""Daily prices from Yahoo Finance (via yfinance), cached per ticker.
-
-Tickers Yahoo doesn't know (delisted, renamed, foreign listings) are remembered in
-``_missing.txt`` so reruns don't ask again. Delisted names dropping out is a
-survivorship bias the README calls out.
-"""
+"""yfinance prices, cached per ticker in data/prices"""
 import time
 from pathlib import Path
 
@@ -14,7 +9,7 @@ COLS = ["Open", "Close", "Volume"]
 
 
 def yahoo_symbol(ticker: str) -> str:
-    """Fool writes share classes with a dot (BRK.B); Yahoo uses a dash (BRK-B)."""
+    # BRK.B -> BRK-B
     return ticker.replace(".", "-").replace("/", "-")
 
 
@@ -26,7 +21,6 @@ def load(tickers: list[str], start: str, cache: Path, batch: int = 100) -> dict[
     listed_later = set(later_file.read_text().split()) if later_file.exists() else set()
 
     def covered(t: str) -> bool:
-        """Cached and starting early enough (a cache built for a later window is refetched)."""
         path = cache / f"{t}.parquet"
         if not path.exists():
             return False
@@ -44,7 +38,7 @@ def load(tickers: list[str], start: str, cache: Path, batch: int = 100) -> dict[
                 data = yf.download(list(symbols), start=start, auto_adjust=True, progress=False,
                                    group_by="ticker", threads=True)
                 break
-            except Exception as e:  # yfinance raises assorted network/rate-limit errors
+            except Exception as e:  # yfinance throws all kinds of random stuff
                 print(f"  batch {i // batch} failed ({e}); retrying")
                 time.sleep(30 * (attempt + 1))
         else:
@@ -57,7 +51,7 @@ def load(tickers: list[str], start: str, cache: Path, batch: int = 100) -> dict[
             else:
                 px.to_parquet(cache / f"{ticker}.parquet")
                 if px.index.min() > pd.Timestamp(start) + pd.Timedelta(days=10):
-                    listed_later.add(ticker)  # IPO'd after `start`: the history really starts later
+                    listed_later.add(ticker)  # ipo'd later
         missing_file.write_text("\n".join(sorted(missing)))
         later_file.write_text("\n".join(sorted(listed_later)))
         print(f"  {min(i + batch, len(todo))}/{len(todo)} done, {len(missing)} without data", flush=True)

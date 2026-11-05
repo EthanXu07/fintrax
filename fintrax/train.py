@@ -1,4 +1,4 @@
-"""Fine-tune FinBERT into a 3-way confidence classifier (low / neutral / high)."""
+"""fine tune finbert for low/neutral/high confidence"""
 import json
 import re
 
@@ -35,8 +35,6 @@ class SentenceDataset(Dataset):
 
 
 class WeightedTrainer(Trainer):
-    """Cross-entropy weighted by inverse class frequency."""
-
     def __init__(self, *args, class_weights: torch.Tensor, **kwargs):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
@@ -51,11 +49,7 @@ class WeightedTrainer(Trainer):
 
 
 def evaluate(scorer, df: pd.DataFrame) -> dict:
-    """Metrics through the same inference path score.py uses.
-
-    (Trainer.predict isn't used: with length-grouped sampling its predictions can
-    come back in a different order than the labels.)
-    """
+    # not using trainer.predict, with group_by_length the order got messed up
     probs = scorer(df["sentence"].tolist())
     to_label = np.array([lexicon.LABELS.index(scorer.id2name[i]) for i in range(probs.shape[1])])
     y, y_pred = df["label"].to_numpy(), to_label[probs.argmax(1)]
@@ -79,7 +73,7 @@ def run(cfg: dict) -> dict:
         tc["base_model"], num_labels=3, id2label=id2label,
         label2id={v: k for k, v in id2label.items()}, ignore_mismatched_sizes=True,
     )
-    # FinBERT's head predicts sentiment; start the confidence head from scratch.
+    # new head, finbert's is for sentiment
     model.classifier.reset_parameters()
 
     ds = {"train": SentenceDataset(split["train"]["sentence"].tolist(), split["train"]["label"].tolist(),
@@ -95,11 +89,11 @@ def run(cfg: dict) -> dict:
         bf16=tc.get("bf16", False),
         train_sampling_strategy="group_by_length",  # less padding per batch
         weight_decay=0.01,
-        warmup_steps=0.1,  # <1 is a ratio of total steps in transformers v5
+        warmup_steps=0.1,  # ratio in v5
         save_strategy="no",
         logging_steps=200,
         report_to="none",
-        dataloader_pin_memory=False,  # unsupported on MPS
+        dataloader_pin_memory=False,
         seed=cfg["label"]["seed"],
     )
     trainer = WeightedTrainer(model=model, args=args, train_dataset=ds["train"], processing_class=tok,
@@ -128,14 +122,9 @@ def run(cfg: dict) -> dict:
 
 
 def context_check(scorer, test: pd.DataFrame) -> dict:
-    """Does the model know anything the lexicon doesn't?
-
-    Test accuracy only shows the model reproduces its weak labels. Here every
-    lexicon cue is deleted from the test's low/high sentences and we ask whether
-    P(high) - P(low) still ranks them correctly (AUC; 0.5 = no signal beyond
-    the lexicon). Neutral sentences are excluded: they have no cues to delete,
-    so they would pass trivially.
-    """
+    # test acc is kind of meaningless since it's just learning the lexicon.
+    # strip all the lexicon words and see if it can still tell low from high (auc)
+    # skip neutral since there's nothing to strip
     cued = test[test["weak_label"] != "neutral"]
     stripped = [re.sub(r"\s+", " ", lexicon.mask_cues(s, "")).strip() for s in cued["sentence"]]
     probs, ids = scorer(stripped), scorer.label2id

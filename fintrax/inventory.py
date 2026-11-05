@@ -1,16 +1,7 @@
-"""Signal-driven inventory: no fixed holding period.
+"""long-only inventory sim
 
-Each call's signal changes the position in that stock at the first market open
-after the call (see ``backtest.entry_index``):
-
-* BUY  -> buy one lot (``lot_dollars`` of stock), up to ``max_lots`` per stock;
-* SELL -> sell every lot held in that stock; long-only, so with none held nothing happens;
-* HOLD -> keep whatever is held.
-
-Lots stay in inventory until a later SELL (or the stock's price history ending,
-e.g. a delisting or acquisition, which closes them at the last close). Each lot
-is mirrored by a shadow lot of SPY bought and sold on the same days with the
-same dollars, so "excess" means "versus putting that money in the index instead".
+BUY = buy a lot (up to max_lots), SELL = dump everything in that stock, HOLD = nothing.
+each lot has a matching SPY lot w/ same $ so we can compare against just buying the index
 """
 from dataclasses import dataclass
 
@@ -28,11 +19,7 @@ class Lot:
 
 
 def run_inventory(events: pd.DataFrame, px: dict, bench: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict]:
-    """Replay signals in date order -> (trade log, open lots by ticker).
-
-    `events` needs ticker, entry_date, signal and entry_price (the entry-day open).
-    Every signal gets a row; only BUY and SELL rows move shares or cash.
-    """
+    # returns (trade log, open lots). events needs ticker/entry_date/signal/entry_price
     lot_dollars, max_lots = cfg["lot_dollars"], cfg["max_lots"]
     held: dict[str, list[Lot]] = {}
     log = []
@@ -69,7 +56,7 @@ def run_inventory(events: pd.DataFrame, px: dict, bench: pd.DataFrame, cfg: dict
             record(date=day, ticker=r.ticker, action=r.signal if r.signal == "HOLD" else f"{r.signal} (no trade)",
                    reason=reason, price=r.entry_price)
 
-    # Lots whose price history stops (delisted, acquired) close at the last close.
+    # delisted/acquired -> close at last price
     last_day = bench.index[-1]
     for ticker, lots in held.items():
         end = px[ticker].index[-1]
@@ -79,18 +66,13 @@ def run_inventory(events: pd.DataFrame, px: dict, bench: pd.DataFrame, cfg: dict
             lots.clear()
 
     log = pd.DataFrame(log).sort_values(["date", "ticker"], kind="stable").reset_index(drop=True)
-    # Lots held after each row (BUY rows add one, SELL rows close one each).
     step = np.select([log["action"] == "BUY", log["action"] == "SELL"], [1, -1], 0)
     log["lots_after"] = pd.Series(step).groupby(log["ticker"]).cumsum()
     return log, {t: lots for t, lots in held.items() if lots}
 
 
 def daily_book(trades: pd.DataFrame, px: dict, bench: pd.DataFrame) -> pd.DataFrame:
-    """Daily mark-to-market of the inventory and its SPY shadow.
-
-    Trades settle at the open (or the last close for delistings), so marking
-    shares at each day's close and adding cumulative cash gives total P&L.
-    """
+    # mark to market every day. pnl = market value + cash
     real = trades[trades["action"].isin(["BUY", "SELL"])]
     days = bench.loc[real["date"].min():].index
     shares = real.pivot_table(index="date", columns="ticker", values="shares", aggfunc="sum")
@@ -109,7 +91,7 @@ def daily_book(trades: pd.DataFrame, px: dict, bench: pd.DataFrame) -> pd.DataFr
     book["spy_pnl"] = book["spy_value"] + book["spy_cash"]
     book["excess_pnl"] = book["pnl"] - book["spy_pnl"]
 
-    # Daily return on capital at work: P&L change over yesterday's value plus today's buys.
+    # daily return = pnl change / (yesterday value + todays buys)
     buys = real[real["action"] == "BUY"].groupby("date")["cost"].sum().reindex(days, fill_value=0.0)
     for name, value, pnl in [("ret", "market_value", "pnl"), ("spy_ret", "spy_value", "spy_pnl")]:
         base = book[value].shift(1, fill_value=0.0) + buys
@@ -118,7 +100,7 @@ def daily_book(trades: pd.DataFrame, px: dict, bench: pd.DataFrame) -> pd.DataFr
     return book
 
 
-def return_stats(r: pd.Series) -> dict:
+def return_stats(r):
     growth = (1 + r).cumprod()
     years = len(r) / 252
     return {"annualized_return": round(float(growth.iloc[-1] ** (1 / years) - 1), 4),
@@ -129,7 +111,6 @@ def return_stats(r: pd.Series) -> dict:
 
 
 def holdings(open_lots: dict, px: dict, bench: pd.DataFrame) -> pd.DataFrame:
-    """Current inventory per stock, marked at the latest close."""
     spy_close = bench["Close"].iloc[-1]
     rows = []
     for ticker, lots in open_lots.items():

@@ -1,8 +1,7 @@
-"""python -m fintrax <stage> [...]"""
 import argparse
 import importlib
 
-# `all` ends at signals (the product). `backtest` is the optional evaluation appendix.
+# backtest isn't in `all` on purpose, run it separately
 STAGES = ["scrape", "parse", "label", "train", "score", "signals"]
 EXTRA = ["backtest"]
 MODULES = {"label": "dataset"}
@@ -19,7 +18,7 @@ def main() -> None:
     cfg = load_config()
     stages = STAGES if "all" in args.stages else args.stages
     for stage in stages:
-        print(f"== {stage} ==")
+        print("==", stage, "==")
         mod = importlib.import_module(f"fintrax.{MODULES.get(stage, stage)}")
         if stage == "scrape":
             mod.run(cfg, only=args.tickers)

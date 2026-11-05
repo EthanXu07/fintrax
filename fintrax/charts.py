@@ -1,9 +1,4 @@
-"""Evaluation figures (results/evaluation/). The signal charts themselves are in report.py.
-
-* signal_returns.png        excess return vs SPY after BUY / HOLD / SELL at fixed horizons
-* confidence_quintiles.png  returns by confidence quintile, ranked within each quarter
-* inventory.png             signal-driven inventory P&L vs the same dollars in SPY, by year
-"""
+"""charts for the backtest stuff (signal charts are in report.py)"""
 import matplotlib
 
 matplotlib.use("Agg")
@@ -17,7 +12,7 @@ SIGNAL_COLORS = {"BUY": GREEN, "HOLD": GRAY, "SELL": RED}
 DOLLARS = FuncFormatter(lambda v, _: f"-${-v:,.0f}" if v < 0 else f"${v:,.0f}")
 
 
-def signal_returns(cfg: dict, d: dict, path) -> None:
+def signal_returns(cfg, d, path):
     horizons = [h for h in cfg["backtest"]["horizons"] if f"{h}d" in d]
     fig, ax = plt.subplots(figsize=(8, 4.2))
     width = 0.8 / 3
@@ -40,7 +35,7 @@ def signal_returns(cfg: dict, d: dict, path) -> None:
     plt.close(fig)
 
 
-def quintiles(cfg: dict, d: dict, path) -> None:
+def quintiles(cfg, d, path):
     horizons = [h for h in cfg["backtest"]["horizons"] if f"{h}d" in d]
     fig, ax = plt.subplots(figsize=(8, 4.2))
     cmap = plt.get_cmap("viridis")
@@ -86,7 +81,7 @@ def inventory_chart(cfg: dict, s: dict, book: pd.DataFrame, path) -> None:
     plt.close(fig)
 
 
-def make_all(cfg: dict, summary: dict, book: pd.DataFrame, out) -> None:
+def make_all(cfg, summary, book, out):
     signal_returns(cfg, summary["signal_diagnostics"], out / "signal_returns.png")
     quintiles(cfg, summary["signal_diagnostics"], out / "confidence_quintiles.png")
     inventory_chart(cfg, summary["inventory"], book, out / "inventory.png")

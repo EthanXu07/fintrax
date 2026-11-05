@@ -1,9 +1,7 @@
-"""Loughran-McDonald word lists plus earnings-call phrases -> confidence weak labels.
+"""weak labels from Loughran-McDonald + some phrases I added
 
-The LM dictionary (free for academic use, not redistributed here) is fetched
-on first use from the copy bundled in the ``pysentiment2`` wheel on PyPI:
-its ``Uncertainty`` column flags uncertainty words and ``Modal`` grades
-modal words 1=strong, 2=moderate, 3=weak.
+LM csv gets pulled from the pysentiment2 wheel on pypi (can't commit it, academic license)
+Modal column: 1=strong 2=moderate 3=weak
 """
 import io
 import re
@@ -20,7 +18,7 @@ from fintrax.config import ROOT
 LM_PATH = ROOT / "data" / "lexicon" / "LM.csv"
 PYPI_JSON = "https://pypi.org/pypi/pysentiment2/0.1.1/json"
 
-# Spoken-language cues the LM lists (built from 10-Ks) miss.
+# LM is built off 10-Ks so it misses a lot of how people actually talk on calls
 CERTAINTY_PHRASES = [
     "confident", "confidence in", "conviction", "committed to", "on track", "certainly",
     "absolutely", "no doubt", "very clear", "clear line of sight", "firmly", "fully expect",
@@ -36,12 +34,12 @@ HEDGE_PHRASES = [
     "visibility is limited", "limited visibility", "lack of visibility", "uncertain", "uncertainty",
     "not going to speculate", "don't want to speculate", "i don't know", "we don't know", "tough to",
 ]
-# Conversational filler hedges only mildly; one alone doesn't make a sentence "low".
+# these are basically filler, count half
 SOFT_HEDGES = ["we believe", "we think", "i think", "i believe", "i guess", "we feel"]
-STRONG_WEIGHT = {"will": 0.5}   # "will" is everywhere in calls; count it half
-MODERATE_WEIGHT = 0.5           # likely / probably / should / would hedge mildly
+STRONG_WEIGHT = {"will": 0.5}   # will is in like every sentence
+MODERATE_WEIGHT = 0.5
 SOFT_WEIGHT = 0.5
-# Approximators in front of numbers ("nearly 600,000") aren't hedges in spoken calls.
+# "nearly 600k" isn't a hedge
 NOT_HEDGES = frozenset({"nearly", "almost", "approximately", "roughly", "approximate"})
 LABELS = ["low", "neutral", "high"]
 WORD_RE = re.compile(r"[a-z']+")
@@ -79,13 +77,12 @@ def load() -> Lexicon:
         strong=words(df["Modal"] == 1),
         moderate=words(df["Modal"] == 2),
         weak=weak - NOT_HEDGES,
-        # Weak modals are also flagged Uncertainty; keep them in one bucket.
+        # weak modals are also flagged uncertainty, don't double count
         uncertainty=words(df["Uncertainty"] > 0) - weak - NOT_HEDGES,
     )
 
 
 def score(sentence: str, lex: Lexicon | None = None) -> tuple[float, float]:
-    """Return (certainty, hedging) cue weights for one sentence."""
     lex = lex or load()
     s = sentence.lower()
     tokens = WORD_RE.findall(s)
@@ -99,8 +96,7 @@ def score(sentence: str, lex: Lexicon | None = None) -> tuple[float, float]:
 
 
 def weak_label(sentence: str, lex: Lexicon | None = None) -> str | None:
-    """high / low when cues clearly point one way, neutral when there are none,
-    None (dropped from training) when the cues are weak or mixed."""
+    # None = mixed, gets dropped from training
     certainty, hedging = score(sentence, lex)
     net = certainty - hedging
     if certainty == 0 and hedging == 0:
@@ -113,7 +109,7 @@ def weak_label(sentence: str, lex: Lexicon | None = None) -> str | None:
 
 
 def mask_cues(sentence: str, mask_token: str, lex: Lexicon | None = None) -> str:
-    """Replace every lexicon cue with the mask token (for the leakage check)."""
+    # used for the leakage check in train.py
     lex = lex or load()
     out = sentence
     for p in sorted(CERTAINTY_PHRASES + HEDGE_PHRASES + SOFT_HEDGES, key=len, reverse=True):
